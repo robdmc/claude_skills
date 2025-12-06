@@ -72,57 +72,37 @@ Team members will automatically have access to the skill when they pull the repo
 
 ### Installing Skills in Claude Desktop App
 
-Claude Desktop uses the Claude API to manage skills. Skills must be uploaded to Anthropic's servers.
+Claude Desktop allows you to import skills by creating and uploading a zip file.
 
-#### Upload Using Python
+#### Step 1: Create a Zip File
 
-```python
-from anthropic.lib import files_from_dir
-import anthropic
-
-client = anthropic.Anthropic()
-
-skill = client.beta.skills.create(
-    display_title="Skill Name",
-    files=files_from_dir("skill-name/desktop"),
-    betas=["skills-2025-10-02"]
-)
-
-print(f"Created skill: {skill.id}")
-```
-
-#### Upload Using cURL
+Navigate to the skill's desktop directory and create a zip file containing all skill files:
 
 ```bash
-curl -X POST "https://api.anthropic.com/v1/skills" \
-  -H "x-api-key: $ANTHROPIC_API_KEY" \
-  -H "anthropic-version: 2023-06-01" \
-  -H "anthropic-beta: skills-2025-10-02" \
-  -F "display_title=Skill Name" \
-  -F "files[]=@skill-name/desktop/SKILL.md;filename=SKILL.md"
+cd skill-name/desktop
+zip -r ../skill-name.zip .
+cd ../..
 ```
 
-#### Using Skills in API Requests
+Or, if you prefer to zip from the parent directory:
 
-Once uploaded, reference the skill in your Messages API calls:
-
-```python
-response = client.beta.messages.create(
-    model="claude-sonnet-4-5-20250929",
-    max_tokens=4096,
-    betas=["code-execution-2025-08-25", "skills-2025-10-02"],
-    container={
-        "skills": [
-            {
-                "type": "custom",
-                "skill_id": "skill_01AbCdEfGhIjKlMnOpQrStUv",
-                "version": "latest"
-            }
-        ]
-    },
-    messages=[{"role": "user", "content": "Your message here"}]
-)
+```bash
+cd skill-name
+zip -r skill-name.zip desktop/*
+cd ..
 ```
+
+**Important:** The zip file should contain the skill files (like `SKILL.md`) at the root level or in the expected directory structure.
+
+#### Step 2: Import into Claude Desktop
+
+1. Open the Claude Desktop app
+2. Navigate to Settings > Skills
+3. Click "Import Skill" or "Add Skill"
+4. Select the zip file you created (e.g., `skill-name.zip`)
+5. The skill will be imported and available for use in your conversations
+
+Once imported, the skill will appear in your skills list and can be activated in conversations where needed.
 
 ## Skill Structure
 

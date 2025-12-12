@@ -256,7 +256,19 @@ WHERE t.amount > 100;
 
 When a user asks about DuckDB data and `duckdb_sql_assets/` doesn't exist:
 
-1. **Ask which files to document:**
+1. **Verify DuckDB CLI is installed:**
+   ```bash
+   duckdb -version
+   ```
+   If the command fails, inform the user:
+   > "DuckDB CLI is required but not found. Please install it:
+   > - macOS: `brew install duckdb`
+   > - Linux: `curl -fsSL https://install.duckdb.org | sh`
+   > - Other platforms: https://duckdb.org/docs/installation"
+
+   Do not proceed until DuckDB is available.
+
+2. **Ask which files to document:**
    > "I don't see any DuckDB assets configured. Which data files should I document? I support:
    > - `.ddb` files (DuckDB databases with multiple tables)
    > - `.csv` files (single table per file, schema auto-inferred)
@@ -264,17 +276,17 @@ When a user asks about DuckDB data and `duckdb_sql_assets/` doesn't exist:
    >
    > You can provide individual file paths or glob patterns (e.g., `data/*.csv`). Please provide the paths."
 
-2. **Handle glob patterns (if provided):**
+3. **Handle glob patterns (if provided):**
    - Expand glob to list matching files
    - Present list to user: "I found N files matching `pattern`. Should I treat these as:"
      - **Separate tables**: Each file becomes its own table with computed name
      - **Single combined table**: One virtual table that unions all files (must share schema)
    - Proceed based on user choice
 
-3. **Ask for supplementary documentation:**
+4. **Ask for supplementary documentation:**
    > "Do you have any code or documentation files that explain this data? (e.g., ETL scripts, data dictionaries, README files) This will help me understand the business context."
 
-4. **Generate assets:**
+5. **Generate assets:**
    - Create `duckdb_sql_assets/` directory
    - For each source file, extract schema based on file type:
      - `.ddb`: `duckdb <file> -c ".schema"`
@@ -284,19 +296,19 @@ When a user asks about DuckDB data and `duckdb_sql_assets/` doesn't exist:
    - Generate `schema_<filename>.sql` for each source file
    - Generate draft `data_dictionary.md` using the template structure above
 
-5. **Detect likely enum columns:**
+6. **Detect likely enum columns:**
    - For each VARCHAR/TEXT column, sample data and check cardinality using hardcoded thresholds:
      - `max_cardinality`: 20 (maximum distinct values)
      - `max_ratio`: 0.05 (max 5% unique values in sample)
      - `sample_size`: 10000 (rows to sample per table)
      - Prioritize columns matching patterns: status, type, state, category, level, role, kind
 
-6. **Present findings for bulk approval:**
+7. **Present findings for bulk approval:**
    - If 1-2 enums found: Ask inline per enum
    - If 3+ enums found: Present summary of all detected enums in one message
    > "I found 12 potential enums: `orders.status` (4 values: pending, shipped, delivered, cancelled), `customers.role` (2 values: admin, user), ... Should I add all of these to the data dictionary?"
 
-7. **Handle user response:**
+8. **Handle user response:**
    - If "yes" → Add all enum documentation to `data_dictionary.md`
    - If "show diff first" → Describe exact changes, then user decides
    - If "add only X, Y, Z" → Add subset specified by user

@@ -32,6 +32,8 @@ All project-specific documentation lives in `duckdb_sql_assets/` in the working 
 - `schema_<filename>.sql` - Schema files (one per DuckDB database)
 - `data_dictionary.md` - Semantic documentation of tables and fields (editable by user)
 
+**Default behavior:** If `duckdb_sql_assets/` already exists, proceed directly to answering the user's question using the existing documentation. Do NOT check for schema changes unless explicitly asked. See [Schema Update Detection](#schema-update-detection-on-demand-only) for trigger phrases.
+
 ## How to Use These Docs
 
 When answering questions or generating queries:
@@ -666,9 +668,19 @@ When you discover new information about the data during conversations or query g
 - **If approved**: Use Edit tool to update `data_dictionary.md` directly
 - **Report changes**: Mention what section was updated
 
-## Schema Update Detection
+## Schema Update Detection (On-Demand Only)
 
-When the skill is invoked, check for changes:
+Schema updates are **on-demand only**. Do NOT check for changes automatically on every invocation.
+
+**Trigger phrases** - Only run schema update checks when the user explicitly requests:
+- "Refresh the schema"
+- "Check for schema changes"
+- "Resync the database"
+- "Update the assets"
+- "Add [filename].ddb to the assets"
+- "Update the data dictionary"
+
+When the user triggers an update:
 
 ### Detect Missing Files
 If a source file in `tables_inventory.json` no longer exists:
@@ -698,6 +710,23 @@ If approved:
 - Update `tables_inventory.json`
 - If new VARCHAR/TEXT columns are detected, run enum detection
 - Ask user if discovered facts should be added to `data_dictionary.md`
+
+### Preserving Data Dictionary Content (CRITICAL)
+
+When updating schema or adding new tables, **never overwrite** `data_dictionary.md`. User-added notes, relationships, and query patterns are valuable and must be preserved.
+
+**Always merge, never replace:**
+- Add new table sections for newly discovered tables
+- Add new columns to existing table sections
+- Preserve ALL existing user-written content: notes, enum values, relationships, query patterns
+
+**For removed tables/columns:**
+- Ask user before removing documentation
+- Data may have moved to another table or been renamed
+
+**Implementation:**
+- Use the Edit tool for surgical updates, NOT the Write tool to regenerate
+- When adding a new table, append a new section rather than rewriting the file
 
 ## Safety Guidelines
 

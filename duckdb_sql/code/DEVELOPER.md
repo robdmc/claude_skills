@@ -22,14 +22,18 @@ This document provides complete context for iterating on and improving the duckd
 | CSV auto-detection | Trust DuckDB defaults | Auto-detects delimiter, headers, types; user can override conversationally |
 | Table naming (CSV/Parquet) | Computed snake_case slug | Filename converted to valid unquoted DuckDB identifier |
 | Glob patterns | User choice: separate or combined | Ask user whether to treat matched files as separate tables or single virtual table |
+| Query execution model | In-memory DuckDB session | All queries use ATTACH for .ddb files, file paths for CSV/Parquet |
+| ATTACH alias convention | `db_` prefix + filename slug | `sales.ddb` → `AS db_sales` for consistent, clear naming |
 
 ### Key Principles
 
 1. **Never hallucinate columns** - Always validate against schema files before generating SQL
-2. **User approval for all facts** - All AI-inferred facts require user approval via inline questions before dictionary entry
-3. **Two-step query workflow** - Present plan for approval before writing SQL
-4. **Conversational setup** - Guide user through initial configuration
-5. **Display-only by default** - Generate and display queries; only execute when user explicitly requests
+2. **Use existing assets first** - When `duckdb_sql_assets/` exists, READ the files; never regenerate schema unless explicitly requested
+3. **User approval for all facts** - All AI-inferred facts require user approval via inline questions before dictionary entry
+4. **Two-step query workflow** - Present plan for approval before writing SQL
+5. **In-memory query execution** - All queries work in `duckdb` (no file argument); .ddb files use ATTACH with `db_` prefix aliases
+6. **Conversational setup** - Guide user through initial configuration
+7. **Display-only by default** - Generate and display queries; only execute when user explicitly requests
 
 ---
 
@@ -374,14 +378,27 @@ Key differences from PostgreSQL:
 
 ### Multi-File Query Patterns
 
-**Across .ddb files (use ATTACH):**
+All queries run in an **in-memory DuckDB session** (`duckdb` with no file argument).
+
+**Single .ddb file:**
 ```sql
-ATTACH '/path/to/other.ddb' AS other_db;
-SELECT * FROM main_table m
-JOIN other_db.other_table o ON m.id = o.id;
+ATTACH '/path/to/sales.ddb' AS db_sales;
+
+SELECT * FROM db_sales.customers;
 ```
 
-**Across CSV/Parquet files (direct file paths):**
+**Multiple .ddb files:**
+```sql
+ATTACH '/path/to/sales.ddb' AS db_sales;
+ATTACH '/path/to/inventory.ddb' AS db_inventory;
+
+SELECT c.name, o.total_amount, p.name AS product_name
+FROM db_sales.customers c
+JOIN db_sales.orders o ON c.customer_id = o.customer_id
+JOIN db_inventory.products p ON o.product_id = p.product_id;
+```
+
+**CSV/Parquet files (direct file paths, no ATTACH):**
 ```sql
 SELECT * FROM '/path/to/orders.csv' o
 JOIN '/path/to/customers.parquet' c ON o.customer_id = c.id;
@@ -389,10 +406,11 @@ JOIN '/path/to/customers.parquet' c ON o.customer_id = c.id;
 
 **Mixed .ddb + CSV/Parquet:**
 ```sql
--- From within a DuckDB database
+ATTACH '/path/to/sales.ddb' AS db_sales;
+
 SELECT c.name, t.amount
-FROM customers c
-JOIN '/path/to/transactions.csv' t ON c.id = t.customer_id;
+FROM db_sales.customers c
+JOIN '/path/to/transactions.csv' t ON c.customer_id = t.customer_id;
 ```
 
 **Glob patterns (multiple files as single table):**
@@ -454,7 +472,7 @@ CREATE TABLE stock(
 );
 ```
 
-**Cross-file join example:** `orders.customer_id` joins to `customers.customer_id` within same file; cross-file joins require ATTACH.
+**Cross-file join example:** In an in-memory session, use `ATTACH '/path/to/sales.ddb' AS db_sales` then reference tables as `db_sales.orders`, `db_sales.customers`.
 
 ### CSV Test Files
 
@@ -486,14 +504,16 @@ duckdb -c "COPY (SELECT * FROM 'products.csv') TO 'products.parquet' (FORMAT PAR
 
 ### Mixed File Type Testing
 
-Test queries across file types:
+Test queries across file types (all run in in-memory session):
 ```sql
--- Join DuckDB table to CSV
+-- Attach DuckDB database, join to CSV
+ATTACH 'sales.ddb' AS db_sales;
+
 SELECT c.name, t.amount
-FROM customers c  -- from sales.ddb
+FROM db_sales.customers c
 JOIN 'transactions.csv' t ON c.customer_id = t.customer_id;
 
--- Join CSV to Parquet
+-- Join CSV to Parquet (no ATTACH needed)
 SELECT t.*, p.name as product_name
 FROM 'transactions.csv' t
 JOIN 'products.parquet' p ON t.product_id = p.product_id;

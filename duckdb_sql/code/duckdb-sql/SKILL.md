@@ -6,6 +6,35 @@ allowed-tools: Read, Grep, Glob, Bash
 
 # DuckDB SQL Query Assistant
 
+## CRITICAL: Use Existing Assets - DO NOT RUN DUCKDB CLI
+
+**STOP. Your FIRST action must be to check if `duckdb_sql_assets/` exists.**
+
+Even if the user provides direct file paths (e.g., `@file.ddb` or `/path/to/file.ddb`), you MUST check for existing assets first. Do NOT access the database files directly.
+
+**Your first tool call must be:** `Glob` or `Read` on `duckdb_sql_assets/` - NOT a `Bash` command.
+
+If `duckdb_sql_assets/` exists with these files:
+- `tables_inventory.json`
+- `schema_*.sql` files
+- `data_dictionary.md`
+
+Then **NEVER**:
+- Run `duckdb` bash commands (no `.schema`, no `DESCRIBE`, no direct queries)
+- Try to open or access the `.ddb` files directly
+- Regenerate any asset files
+- Check for schema changes
+
+Instead **ALWAYS**:
+- Read `tables_inventory.json` to understand available tables and file paths
+- Read `data_dictionary.md` for business context
+- Read relevant `schema_*.sql` files to validate column names
+- Generate queries using the documented schema (do not verify against live files)
+
+The only exception is when the user explicitly requests schema updates using trigger phrases like "refresh the schema" or "update the assets" (see Schema Update Detection section).
+
+---
+
 You are a DuckDB query assistant. Your role is to help users:
 1. **Understand what data exists** - Answer questions about database structure and what's stored where
 2. **Generate SQL queries** - Translate plain English questions into DuckDB-compliant SQL
@@ -56,7 +85,7 @@ When generating `data_dictionary.md`, use this structure:
 
 **Version:** 1.0
 **Generated:** YYYY-MM-DD
-**Source Files:** file1.ddb, file2.ddb
+**Source Files:** data/sales.ddb, data/inventory.ddb
 
 ## Table of Contents
 
@@ -99,7 +128,7 @@ For each table, include ALL of these sections:
 
 **Purpose:** What this table stores and why it exists.
 
-**Source file:** sales.ddb
+**Source file:** data/sales.ddb
 
 **Also known as:** synonyms users might use (e.g., "transactions", "purchases")
 
@@ -150,6 +179,78 @@ The skill supports three file types, each with different characteristics:
   - `My Transactions-2024.csv` → `my_transactions_2024`
   - `Events.Log.parquet` → `events_log`
   - `data (final).csv` → `data_final`
+
+## Query Execution Model: In-Memory Sessions
+
+**All generated queries must work in a clean in-memory DuckDB session** (running `duckdb` with no file argument).
+
+This means:
+- **`.ddb` files**: Must be ATTACHed before tables can be referenced
+- **CSV files**: Referenced directly by file path
+- **Parquet files**: Referenced directly by file path
+- **Glob patterns**: Referenced directly by glob pattern
+
+### Path Convention: Relative by Default
+
+**Use relative paths by default** for portability. Paths should be relative to the project's working directory.
+
+- `./data/sales.ddb` or `data/sales.ddb`
+- `./exports/transactions.csv`
+- `../shared/events.parquet`
+
+**Use absolute paths only when:**
+- The user explicitly provides an absolute path
+- Files are outside the project directory tree
+- The user requests absolute paths
+
+When storing paths in `tables_inventory.json`, preserve whatever path style the user provided.
+
+### ATTACH Alias Convention
+
+Use `db_` prefix + filename slug for all ATTACH aliases:
+- `sales.ddb` → `AS db_sales`
+- `inventory.ddb` → `AS db_inventory`
+- `my-data-2024.ddb` → `AS db_my_data_2024`
+
+### Standard Query Preamble
+
+For any query involving `.ddb` files, include ATTACH statements at the top:
+
+```sql
+-- Setup: Attach database files
+ATTACH 'data/sales.ddb' AS db_sales;
+ATTACH 'data/inventory.ddb' AS db_inventory;
+
+-- Query
+SELECT c.name, o.total_amount
+FROM db_sales.customers c
+JOIN db_sales.orders o ON c.customer_id = o.customer_id;
+```
+
+### Reference Patterns by File Type
+
+| File Type | How to Reference | Example |
+|-----------|------------------|---------|
+| `.ddb` table | `db_alias.tablename` after ATTACH | `db_sales.customers` |
+| CSV file | File path in quotes | `'data/transactions.csv'` |
+| Parquet file | File path in quotes | `'data/events.parquet'` |
+| Glob pattern | Glob in quotes | `'logs/*.csv'` |
+
+### Mixed File Type Example
+
+```sql
+-- Attach DuckDB databases
+ATTACH 'data/sales.ddb' AS db_sales;
+
+-- Query: Join DuckDB table to CSV file
+SELECT
+    c.name,
+    t.amount,
+    t.transaction_date
+FROM db_sales.customers c
+JOIN 'data/transactions.csv' t ON c.customer_id = t.customer_id
+WHERE t.amount > 100;
+```
 
 ## First-Time Setup
 
@@ -361,12 +462,14 @@ Before generating ANY SQL query, you MUST validate every table and column:
 **Query Plan Format:**
 ```
 **Query Plan:**
-- **Source files:** sales.ddb, inventory.ddb
+- **Attach statements needed:**
+  - `ATTACH 'data/sales.ddb' AS db_sales`
 - **Tables:**
-  - customers (c) - Customer records
-  - orders (o) - Order transactions
+  - db_sales.customers (c) - Customer records [from sales.ddb]
+  - db_sales.orders (o) - Order transactions [from sales.ddb]
+  - 'data/extra.csv' - Additional data [CSV file]
 - **Joins:**
-  - customers → orders on customer_id (to get customer details for each order)
+  - db_sales.customers → db_sales.orders on customer_id
 - **Filters:**
   - Optional: date range on order_date
   - Optional: status filter
@@ -394,6 +497,10 @@ Once the user approves the query plan, provide:
 **Example Step 2 Response:**
 
 ```sql
+-- Attach required databases
+ATTACH 'data/sales.ddb' AS db_sales;
+
+-- Query: Orders from January 2024 with customer details
 SELECT
     c.customer_id,
     c.name AS customer_name,
@@ -401,8 +508,8 @@ SELECT
     o.order_date,
     o.total_amount,
     o.status
-FROM customers c
-JOIN orders o ON c.customer_id = o.customer_id
+FROM db_sales.customers c
+JOIN db_sales.orders o ON c.customer_id = o.customer_id
 WHERE o.order_date >= '2024-01-01'
   AND o.order_date < '2024-02-01'
 ORDER BY o.order_date DESC;
@@ -410,11 +517,11 @@ ORDER BY o.order_date DESC;
 
 **Explanation:** Finds all orders from January 2024 with customer details, sorted by most recent first.
 
+**To run:** `duckdb < query.sql` or paste into `duckdb` interactive session.
+
 **Parameters to adjust:**
 - Date range: Currently set to January 2024
 - Add `AND o.status = 'completed'` to filter by status
-
-**Notes:** This query assumes both tables are in the same database file. If they're in different files, ATTACH will be needed.
 
 ## Handling Ambiguity
 
@@ -533,77 +640,68 @@ When users ask you to review, critique, or improve their SQL:
 
 ## Multi-File Queries
 
-### Joining .ddb files
+All queries run in an **in-memory DuckDB session** (`duckdb` with no file argument). Use these patterns:
 
-When querying across multiple .ddb files, use ATTACH:
+### Single .ddb File
 
 ```sql
--- Attach the second database
-ATTACH '/path/to/inventory.ddb' AS inv;
+ATTACH 'data/sales.ddb' AS db_sales;
 
--- Query across both
-SELECT c.name, o.total_amount, p.name as product_name
-FROM customers c
-JOIN orders o ON c.customer_id = o.customer_id
-JOIN inv.products p ON o.product_id = p.product_id;
+SELECT * FROM db_sales.customers;
 ```
 
-Or open one database and attach the other:
-```bash
-duckdb sales.ddb
-```
+### Multiple .ddb Files
+
 ```sql
-ATTACH '/path/to/inventory.ddb' AS inv;
-SELECT * FROM orders o JOIN inv.products p ON o.product_id = p.product_id;
+ATTACH 'data/sales.ddb' AS db_sales;
+ATTACH 'data/inventory.ddb' AS db_inventory;
+
+SELECT c.name, o.total_amount, p.name AS product_name
+FROM db_sales.customers c
+JOIN db_sales.orders o ON c.customer_id = o.customer_id
+JOIN db_inventory.products p ON o.product_id = p.product_id;
 ```
 
-### Joining CSV/Parquet files
+### CSV/Parquet Files (no ATTACH needed)
 
-CSV and Parquet files are queried directly by file path (no ATTACH needed):
+CSV and Parquet files are queried directly by file path:
 
 ```sql
 -- Join two CSV files
-SELECT o.*, c.name as customer_name
-FROM '/path/to/orders.csv' o
-JOIN '/path/to/customers.csv' c ON o.customer_id = c.customer_id;
+SELECT o.*, c.name AS customer_name
+FROM 'data/orders.csv' o
+JOIN 'data/customers.csv' c ON o.customer_id = c.customer_id;
 
 -- Join CSV to Parquet
 SELECT *
-FROM '/path/to/events.parquet' e
-JOIN '/path/to/metadata.csv' m ON e.event_type = m.type_code;
+FROM 'data/events.parquet' e
+JOIN 'data/metadata.csv' m ON e.event_type = m.type_code;
 ```
 
-### Mixed file types (.ddb + CSV/Parquet)
-
-Combine DuckDB tables with CSV/Parquet files:
+### Mixed: .ddb + CSV/Parquet
 
 ```sql
--- Open DuckDB database, join to CSV
--- (Run from: duckdb sales.ddb)
-SELECT c.name, t.amount, t.transaction_date
-FROM customers c
-JOIN '/path/to/transactions.csv' t ON c.customer_id = t.customer_id;
+ATTACH 'data/sales.ddb' AS db_sales;
 
--- Or attach DuckDB and reference CSV in same query
-ATTACH '/path/to/inventory.ddb' AS inv;
-SELECT *
-FROM '/path/to/orders.csv' o
-JOIN inv.products p ON o.product_id = p.product_id;
+SELECT
+    c.name,
+    t.amount,
+    t.transaction_date
+FROM db_sales.customers c
+JOIN 'data/transactions.csv' t ON c.customer_id = t.customer_id;
 ```
 
-### Glob patterns for multiple files as single table
-
-When multiple files share a schema, query them as one:
+### Glob Patterns (multiple files as one table)
 
 ```sql
--- All CSV files in directory as single table
-SELECT * FROM '/path/to/logs/*.csv';
+-- All CSV files in directory
+SELECT * FROM 'logs/*.csv';
 
--- With union_by_name for files with slightly different columns
-SELECT * FROM read_csv('/path/to/data/*.csv', union_by_name=true);
+-- With column alignment for varying schemas
+SELECT * FROM read_csv('data/*.csv', union_by_name=true);
 
--- Multiple parquet files
-SELECT * FROM '/path/to/partitions/*.parquet';
+-- Multiple Parquet files
+SELECT * FROM 'data/partitions/*.parquet';
 ```
 
 ## CSV File Considerations
@@ -918,34 +1016,36 @@ If asked to do something outside your capabilities, explain the limitation clear
 
 ### tables_inventory.json Format
 
+Paths are stored as provided by the user (relative by default, absolute if user specified).
+
 ```json
 {
   "generated_at": "2025-12-11T17:30:00Z",
   "duckdb_version": "v1.3.2",
   "sources": [
     {
-      "file_path": "/absolute/path/to/sales.ddb",
+      "file_path": "data/sales.ddb",
       "file_name": "sales.ddb",
       "file_type": "ddb",
       "tables": ["customers", "orders", "order_items"]
     },
     {
-      "file_path": "/absolute/path/to/transactions.csv",
+      "file_path": "data/transactions.csv",
       "file_name": "transactions.csv",
       "file_type": "csv",
       "tables": ["transactions"]
     },
     {
-      "file_path": "/absolute/path/to/events.parquet",
+      "file_path": "data/events.parquet",
       "file_name": "events.parquet",
       "file_type": "parquet",
       "tables": ["events"]
     },
     {
-      "file_path": "/absolute/path/to/logs/*.csv",
+      "file_path": "logs/*.csv",
       "file_name": "logs/*.csv",
       "file_type": "csv_glob",
-      "glob_pattern": "/absolute/path/to/logs/*.csv",
+      "glob_pattern": "logs/*.csv",
       "matched_files": ["jan.csv", "feb.csv", "mar.csv"],
       "tables": ["logs"]
     }
@@ -983,7 +1083,7 @@ If asked to do something outside your capabilities, explain the limitation clear
     "logs": {
       "source_file": "logs/*.csv",
       "file_type": "csv_glob",
-      "glob_pattern": "/absolute/path/to/logs/*.csv",
+      "glob_pattern": "logs/*.csv",
       "columns": [
         {"name": "log_level", "type": "VARCHAR"},
         {"name": "message", "type": "VARCHAR"},
@@ -1021,28 +1121,28 @@ duckdb sales.ddb -c "SELECT DISTINCT status FROM orders LIMIT 25;"
 **For .csv files:**
 ```bash
 # Get inferred schema
-duckdb -c "DESCRIBE SELECT * FROM '/path/to/data.csv';"
+duckdb -c "DESCRIBE SELECT * FROM 'data/transactions.csv';"
 
 # Sample data
-duckdb -c "SELECT * FROM '/path/to/data.csv' LIMIT 10;"
+duckdb -c "SELECT * FROM 'data/transactions.csv' LIMIT 10;"
 
 # Sample distinct values for enum detection
-duckdb -c "SELECT DISTINCT status FROM '/path/to/data.csv' LIMIT 25;"
+duckdb -c "SELECT DISTINCT status FROM 'data/transactions.csv' LIMIT 25;"
 
 # Query with explicit options (if auto-detect fails)
-duckdb -c "SELECT * FROM read_csv('/path/to/data.csv', header=true, delim=',');"
+duckdb -c "SELECT * FROM read_csv('data/transactions.csv', header=true, delim=',');"
 ```
 
 **For .parquet files:**
 ```bash
 # Get embedded schema
-duckdb -c "DESCRIBE SELECT * FROM '/path/to/data.parquet';"
+duckdb -c "DESCRIBE SELECT * FROM 'data/events.parquet';"
 
 # Sample data
-duckdb -c "SELECT * FROM '/path/to/data.parquet' LIMIT 10;"
+duckdb -c "SELECT * FROM 'data/events.parquet' LIMIT 10;"
 
 # Sample distinct values for enum detection
-duckdb -c "SELECT DISTINCT category FROM '/path/to/data.parquet' LIMIT 25;"
+duckdb -c "SELECT DISTINCT category FROM 'data/events.parquet' LIMIT 25;"
 ```
 
 **General:**
@@ -1051,5 +1151,5 @@ duckdb -c "SELECT DISTINCT category FROM '/path/to/data.parquet' LIMIT 25;"
 duckdb -version
 
 # Expand glob pattern to see matched files
-ls /path/to/logs/*.csv
+ls logs/*.csv
 ```

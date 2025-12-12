@@ -11,13 +11,17 @@ This document provides complete context for iterating on and improving the duckd
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
 | Asset location | Working directory (`duckdb_sql_assets/`) | Skill is reusable; project-specific data stays with project |
-| Schema files | One per database file | Avoids confusion about which tables come from where |
+| Supported file types | .ddb, .csv, .parquet + glob patterns | Leverage DuckDB's native file reading capabilities |
+| Schema files | One per source file | Avoids confusion about which tables come from where |
 | Data dictionary | Single unified file with rich structure | Cross-file relationships documented in one place |
 | Enum detection | Auto-detect via sampling with hardcoded thresholds | Sensible defaults work for 95% of use cases; special cases handled conversationally |
 | Statistics | Schema-only (no row counts) | Prevents stale data; schema changes less frequently |
 | Fact collection | Via inline approval | Inferred facts presented during conversation for immediate approval |
 | Bulk approval | Supported | User can approve multiple discoveries at once via summary presentation |
 | Query execution | Display-only by default | Users review/copy queries; execution only on explicit request |
+| CSV auto-detection | Trust DuckDB defaults | Auto-detects delimiter, headers, types; user can override conversationally |
+| Table naming (CSV/Parquet) | Computed snake_case slug | Filename converted to valid unquoted DuckDB identifier |
+| Glob patterns | User choice: separate or combined | Ask user whether to treat matched files as separate tables or single virtual table |
 
 ### Key Principles
 
@@ -41,8 +45,8 @@ duckdb-sql/
 ### Asset Directory (Per-Project)
 ```
 duckdb_sql_assets/
-├── tables_inventory.json    # Manifest: source files, tables, columns
-├── schema_<filename>.sql    # One schema file per .ddb file
+├── tables_inventory.json    # Manifest: source files, file types, tables, columns
+├── schema_<tablename>.sql   # One schema file per source (.ddb, .csv, .parquet, or glob)
 └── data_dictionary.md       # Semantic documentation (editable by user)
 ```
 
@@ -54,17 +58,21 @@ duckdb_sql_assets/
 
 When `duckdb_sql_assets/` doesn't exist:
 
-1. Ask: "Which .ddb files should I document?"
-2. Ask: "Do you have any code or documentation that explains this data?"
-3. Generate assets:
-   - `tables_inventory.json` via duckdb CLI
-   - `schema_<filename>.sql` for each database
+1. Ask: "Which data files should I document?" (supports .ddb, .csv, .parquet, or glob patterns)
+2. If glob pattern provided, ask: "Treat as separate tables or single combined table?"
+3. Ask: "Do you have any code or documentation that explains this data?"
+4. Generate assets:
+   - `tables_inventory.json` via duckdb CLI (with file_type field)
+   - `schema_<tablename>.sql` for each source:
+     - `.ddb`: `duckdb file.ddb -c ".schema"`
+     - `.csv`: `duckdb -c "DESCRIBE SELECT * FROM 'file.csv';"`
+     - `.parquet`: `duckdb -c "DESCRIBE SELECT * FROM 'file.parquet';"`
    - Draft `data_dictionary.md` with rich structure (domains, table entries, relationships)
-4. Run enum detection with hardcoded thresholds (max_cardinality=20, max_ratio=0.05, sample_size=10000)
-5. Present findings:
+5. Run enum detection with hardcoded thresholds (max_cardinality=20, max_ratio=0.05, sample_size=10000)
+6. Present findings:
    - If 1-2 enums: Ask inline per enum
    - If 3+ enums: Present bulk summary for approval
-6. If approved, update `data_dictionary.md` directly with enum documentation
+7. If approved, update `data_dictionary.md` directly with enum documentation
 
 ### 2. Query Generation
 
@@ -77,15 +85,19 @@ When `duckdb_sql_assets/` doesn't exist:
 
 ### 3. Schema Update Detection
 
-On skill invocation, check for changes:
+Schema updates are on-demand only (triggered by user phrases like "refresh the schema" or "add file to assets").
 
 - **Files removed:** Prompt to clean up assets
-- **Files added:** User requests "add new_file.ddb", skill generates assets
+- **Files added:** User requests "add [file]", skill generates assets (supports .ddb, .csv, .parquet, or glob patterns)
 - **Schema changes:** Detect new/removed columns, offer to update
 
 Update actions:
 - Removed files: Delete schema file, update inventory and dictionary
-- Added files: Generate schema, update inventory, add dictionary stubs, run enum detection and present findings
+- Added files:
+  - For .ddb: Generate schema via `.schema` command
+  - For .csv/.parquet: Generate schema via `DESCRIBE SELECT * FROM 'file'`
+  - For glob patterns: Ask user if separate tables or combined, then process accordingly
+  - Update inventory (with file_type), add dictionary stubs, run enum detection
 - Schema changes: Regenerate schema file, update inventory, run enum detection on new VARCHAR/TEXT columns
 
 ### 4. Inline Fact Discovery
@@ -133,20 +145,64 @@ A column is flagged as likely enum if ALL are true:
     {
       "file_path": "/absolute/path/to/file.ddb",
       "file_name": "file.ddb",
+      "file_type": "ddb",
       "tables": ["table1", "table2"]
+    },
+    {
+      "file_path": "/absolute/path/to/data.csv",
+      "file_name": "data.csv",
+      "file_type": "csv",
+      "tables": ["data"]
+    },
+    {
+      "file_path": "/absolute/path/to/events.parquet",
+      "file_name": "events.parquet",
+      "file_type": "parquet",
+      "tables": ["events"]
+    },
+    {
+      "file_path": "/absolute/path/to/logs/*.csv",
+      "file_name": "logs/*.csv",
+      "file_type": "csv_glob",
+      "glob_pattern": "/absolute/path/to/logs/*.csv",
+      "matched_files": ["jan.csv", "feb.csv"],
+      "tables": ["logs"]
     }
   ],
   "tables": {
     "table1": {
       "source_file": "file.ddb",
+      "file_type": "ddb",
       "columns": [
         {"name": "col1", "type": "VARCHAR"},
         {"name": "col2", "type": "INTEGER"}
+      ]
+    },
+    "data": {
+      "source_file": "data.csv",
+      "file_type": "csv",
+      "columns": [
+        {"name": "id", "type": "INTEGER"},
+        {"name": "value", "type": "VARCHAR"}
       ]
     }
   }
 }
 ```
+
+**File type values:**
+- `ddb` - DuckDB database file (multiple tables, query via table name, cross-file via ATTACH)
+- `csv` - Single CSV file (one table, query via file path)
+- `parquet` - Single Parquet file (one table, query via file path)
+- `csv_glob` - Multiple CSV files as single table (query via glob pattern)
+- `parquet_glob` - Multiple Parquet files as single table (query via glob pattern)
+
+**Table naming for CSV/Parquet:**
+Convert filename to valid unquoted DuckDB identifier:
+- Lowercase, snake_case
+- Replace non-alphanumeric with underscore
+- Strip extension
+- Examples: `My Data-2024.csv` → `my_data_2024`, `Events.Log.parquet` → `events_log`
 
 ### schema_<filename>.sql
 
@@ -235,44 +291,71 @@ Order processing and transactions.
 
 ## DuckDB CLI Commands
 
-### Extract schema
+### For .ddb files
+
 ```bash
+# Extract schema
 duckdb file.ddb -c ".schema" > schema_file.sql
-```
 
-### List tables
-```bash
+# List tables
 duckdb file.ddb -c "SELECT table_name FROM information_schema.tables WHERE table_schema='main';"
-```
 
-### Describe table
-```bash
+# Describe table
 duckdb file.ddb -c "DESCRIBE tablename;"
-```
 
-### Get column info
-```bash
+# Get column info
 duckdb file.ddb -c "SELECT column_name, data_type FROM information_schema.columns WHERE table_name='tablename';"
-```
 
-### Get VARCHAR columns (for enum detection)
-```bash
+# Get VARCHAR columns (for enum detection)
 duckdb file.ddb -c "SELECT column_name, table_name FROM information_schema.columns WHERE table_schema='main' AND data_type IN ('VARCHAR', 'TEXT');"
-```
 
-### Check column cardinality (for enum detection)
-```bash
+# Check column cardinality (for enum detection)
 duckdb file.ddb -c "WITH sampled AS (SELECT status FROM orders LIMIT 10000) SELECT COUNT(DISTINCT status) as distinct_count, COUNT(*) as sample_size FROM sampled;"
-```
 
-### Sample distinct values (for enum detection)
-```bash
+# Sample distinct values (for enum detection)
 duckdb file.ddb -c "SELECT DISTINCT status FROM orders WHERE status IS NOT NULL LIMIT 25;"
 ```
 
-### Check version
+### For .csv files
+
 ```bash
+# Get inferred schema
+duckdb -c "DESCRIBE SELECT * FROM '/path/to/file.csv';"
+
+# Sample data
+duckdb -c "SELECT * FROM '/path/to/file.csv' LIMIT 10;"
+
+# Check column cardinality (for enum detection)
+duckdb -c "WITH sampled AS (SELECT status FROM '/path/to/file.csv' LIMIT 10000) SELECT COUNT(DISTINCT status) as distinct_count, COUNT(*) as sample_size FROM sampled;"
+
+# Sample distinct values (for enum detection)
+duckdb -c "SELECT DISTINCT status FROM '/path/to/file.csv' WHERE status IS NOT NULL LIMIT 25;"
+
+# With explicit options (if auto-detect fails)
+duckdb -c "SELECT * FROM read_csv('/path/to/file.csv', header=true, delim=',');"
+```
+
+### For .parquet files
+
+```bash
+# Get embedded schema
+duckdb -c "DESCRIBE SELECT * FROM '/path/to/file.parquet';"
+
+# Sample data
+duckdb -c "SELECT * FROM '/path/to/file.parquet' LIMIT 10;"
+
+# Check column cardinality (for enum detection)
+duckdb -c "WITH sampled AS (SELECT category FROM '/path/to/file.parquet' LIMIT 10000) SELECT COUNT(DISTINCT category) as distinct_count, COUNT(*) as sample_size FROM sampled;"
+```
+
+### General
+
+```bash
+# Check version
 duckdb -version
+
+# Expand glob pattern
+ls /path/to/logs/*.csv
 ```
 
 ---
@@ -289,11 +372,33 @@ Key differences from PostgreSQL:
 | Type cast | `col::TYPE` or `CAST()` | Same |
 | Multi-file | `ATTACH 'file.ddb' AS alias` | N/A |
 
-### Multi-File Query Pattern
+### Multi-File Query Patterns
+
+**Across .ddb files (use ATTACH):**
 ```sql
 ATTACH '/path/to/other.ddb' AS other_db;
 SELECT * FROM main_table m
 JOIN other_db.other_table o ON m.id = o.id;
+```
+
+**Across CSV/Parquet files (direct file paths):**
+```sql
+SELECT * FROM '/path/to/orders.csv' o
+JOIN '/path/to/customers.parquet' c ON o.customer_id = c.id;
+```
+
+**Mixed .ddb + CSV/Parquet:**
+```sql
+-- From within a DuckDB database
+SELECT c.name, t.amount
+FROM customers c
+JOIN '/path/to/transactions.csv' t ON c.id = t.customer_id;
+```
+
+**Glob patterns (multiple files as single table):**
+```sql
+SELECT * FROM '/path/to/logs/*.csv';
+SELECT * FROM read_csv('/path/to/data/*.csv', union_by_name=true);
 ```
 
 ---
@@ -351,6 +456,49 @@ CREATE TABLE stock(
 
 **Cross-file join example:** `orders.customer_id` joins to `customers.customer_id` within same file; cross-file joins require ATTACH.
 
+### CSV Test Files
+
+**transactions.csv**:
+```csv
+transaction_id,customer_id,amount,transaction_date,status
+1001,1,99.99,2024-03-01,completed
+1002,1,149.50,2024-03-15,completed
+1003,2,75.00,2024-03-20,pending
+1004,2,200.00,2024-03-25,cancelled
+```
+
+**products.csv**:
+```csv
+product_id,name,category,price
+1,Widget A,Electronics,29.99
+2,Gadget B,Electronics,49.99
+3,Tool C,Hardware,19.99
+```
+
+### Parquet Test Files
+
+Create Parquet files from CSV using DuckDB:
+```bash
+# Convert CSV to Parquet
+duckdb -c "COPY (SELECT * FROM 'transactions.csv') TO 'transactions.parquet' (FORMAT PARQUET);"
+duckdb -c "COPY (SELECT * FROM 'products.csv') TO 'products.parquet' (FORMAT PARQUET);"
+```
+
+### Mixed File Type Testing
+
+Test queries across file types:
+```sql
+-- Join DuckDB table to CSV
+SELECT c.name, t.amount
+FROM customers c  -- from sales.ddb
+JOIN 'transactions.csv' t ON c.customer_id = t.customer_id;
+
+-- Join CSV to Parquet
+SELECT t.*, p.name as product_name
+FROM 'transactions.csv' t
+JOIN 'products.parquet' p ON t.product_id = p.product_id;
+```
+
 ---
 
 ## Future Improvements
@@ -407,6 +555,6 @@ Generated assets (created per-project in `duckdb_sql_assets/`):
 
 | File | Purpose |
 |------|---------|
-| tables_inventory.json | Manifest of source files and tables |
-| schema_*.sql | One schema file per database |
+| tables_inventory.json | Manifest of source files, file types, and tables |
+| schema_*.sql | One schema file per source (.ddb, .csv, .parquet, or glob) |
 | data_dictionary.md | Semantic documentation (editable by user) |

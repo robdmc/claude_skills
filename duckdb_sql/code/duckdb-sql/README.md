@@ -113,34 +113,3 @@ When querying across multiple .ddb files, the skill uses DuckDB's ATTACH:
 ATTACH '/path/to/other.ddb' AS other_db;
 SELECT * FROM main_table JOIN other_db.other_table ON ...;
 ```
-
-## Packaging for Delivery
-
-You can consolidate all your databases into a single, deliverable package.
-
-**Trigger phrases:**
-- "Package up this data set"
-- "Consolidate this data set"
-- "Create a snapshot for delivery"
-
-**What happens:**
-1. A new subdirectory is created (default: `packaged/`)
-2. All tables from all source files are copied into a single `.ddb` file
-3. New `duckdb_sql_assets/` is created with updated documentation
-4. Original files remain untouched
-
-**Output structure:**
-```
-packaged/
-├── project_name.ddb           # Single database with all tables
-└── duckdb_sql_assets/
-    ├── tables_inventory.json  # Updated for single file
-    ├── schema_project_name.sql
-    ├── data_dictionary.md     # Updated source references
-    └── OBSERVATIONS.md        # Fresh file
-```
-
-This is useful for:
-- Sharing a dataset with collaborators
-- Creating a clean snapshot for archival
-- Simplifying deployment

@@ -102,15 +102,6 @@ During setup and on-demand, the skill scans for likely enum columns.
 
 **Happy Path:** Defaults work automatically for most datasets. User just reviews and approves observations.
 
-### 6. Consolidate/Package Dataset
-
-See dedicated section below for full details. Summary:
-1. User triggers with "package this data set" or similar
-2. Skill prompts for output directory and database name
-3. Creates subdirectory with single .ddb file containing all tables
-4. Generates fresh assets pointing to consolidated file
-5. Original files remain untouched
-
 **Configuration** (in `tables_inventory.json`):
 ```json
 {
@@ -394,73 +385,6 @@ CREATE TABLE stock(
 ```
 
 **Cross-file join example:** `orders.customer_id` joins to `customers.customer_id` within same file; cross-file joins require ATTACH.
-
----
-
-## Consolidate/Package Dataset Workflow
-
-This workflow allows users to create a deliverable snapshot of their multi-file setup.
-
-### Design Decisions
-
-| Decision | Choice | Rationale |
-|----------|--------|-----------|
-| Original files | Preserved | Users continue working with multi-file setup; package is for delivery |
-| Output location | Subdirectory in cwd | Self-contained, easy to zip and share |
-| Database naming | Derived from project | Sensible default, user confirms |
-| Conflict resolution | Prefix with source name | Preserves all data, makes origin clear |
-| Assets | Full regeneration | Clean slate for packaged version |
-
-### DuckDB Commands
-
-```bash
-# Create consolidated database using ATTACH + CREATE TABLE AS SELECT
-duckdb /output/project.ddb << 'EOF'
-ATTACH '/path/to/sales.ddb' AS src_sales (READ_ONLY);
-ATTACH '/path/to/inventory.ddb' AS src_inv (READ_ONLY);
-
-CREATE TABLE customers AS SELECT * FROM src_sales.customers;
-CREATE TABLE orders AS SELECT * FROM src_sales.orders;
-CREATE TABLE products AS SELECT * FROM src_inv.products;
-CREATE TABLE stock AS SELECT * FROM src_inv.stock;
-
-DETACH src_sales;
-DETACH src_inv;
-EOF
-
-# Generate schema for new database
-duckdb /output/project.ddb -c ".schema" > /output/duckdb_sql_assets/schema_project.sql
-```
-
-### Asset Transformations
-
-**tables_inventory.json:**
-- `sources[]`: Collapses to single entry with relative path `./project.ddb`
-- `tables{}`: All `source_file` fields updated to new filename
-- New `packaged_from` object added for provenance
-
-**data_dictionary.md:**
-- Header: Update `**Source Files:**` to single file
-- Header: Add `**Packaged from:**` for provenance
-- Each table: Update `**Source file:**` line
-- Each table: Add `**Original source:**` for provenance
-- If conflicts resolved via prefix: Update table names and "Also known as"
-
-**schema_*.sql:**
-- Delete all old schema files
-- Generate single `schema_<name>.sql` from consolidated database
-
-**OBSERVATIONS.md:**
-- Fresh template with packaging provenance note
-
-### Table Name Conflict Handling
-
-Detection: Build `table_name -> [source_files]` map, flag duplicates.
-
-Resolution options:
-1. **Prefix** (default): `sales_users`, `support_users`
-2. **Skip**: Keep first occurrence only
-3. **Abort**: Cancel for manual resolution
 
 ---
 

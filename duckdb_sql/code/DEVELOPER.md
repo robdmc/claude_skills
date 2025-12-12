@@ -13,17 +13,16 @@ This document provides complete context for iterating on and improving the duckd
 | Asset location | Working directory (`duckdb_sql_assets/`) | Skill is reusable; project-specific data stays with project |
 | Schema files | One per database file | Avoids confusion about which tables come from where |
 | Data dictionary | Single unified file with rich structure | Cross-file relationships documented in one place |
-| Enum detection | Auto-detect via sampling with configurable thresholds | Happy path: defaults work; power users can tune |
+| Enum detection | Auto-detect via sampling with hardcoded thresholds | Sensible defaults work for 95% of use cases; special cases handled conversationally |
 | Statistics | Schema-only (no row counts) | Prevents stale data; schema changes less frequently |
-| Cross-file relationships | Not auto-created | Discovered through usage, captured in OBSERVATIONS.md |
-| Fact collection | Via OBSERVATIONS.md | All inferred facts require user approval before dictionary entry |
-| Bulk approval | Supported | User can approve multiple observations at once |
+| Fact collection | Via inline approval | Inferred facts presented during conversation for immediate approval |
+| Bulk approval | Supported | User can approve multiple discoveries at once via summary presentation |
 | Query execution | Display-only by default | Users review/copy queries; execution only on explicit request |
 
 ### Key Principles
 
 1. **Never hallucinate columns** - Always validate against schema files before generating SQL
-2. **User approval for all facts** - Even AI-inferred facts from supplementary docs go to OBSERVATIONS.md first
+2. **User approval for all facts** - All AI-inferred facts require user approval via inline questions before dictionary entry
 3. **Two-step query workflow** - Present plan for approval before writing SQL
 4. **Conversational setup** - Guide user through initial configuration
 5. **Display-only by default** - Generate and display queries; only execute when user explicitly requests
@@ -44,8 +43,7 @@ duckdb-sql/
 duckdb_sql_assets/
 ├── tables_inventory.json    # Manifest: source files, tables, columns
 ├── schema_<filename>.sql    # One schema file per .ddb file
-├── data_dictionary.md       # Semantic documentation
-└── OBSERVATIONS.md          # Staging area for learned facts
+└── data_dictionary.md       # Semantic documentation (editable by user)
 ```
 
 ---
@@ -59,13 +57,14 @@ When `duckdb_sql_assets/` doesn't exist:
 1. Ask: "Which .ddb files should I document?"
 2. Ask: "Do you have any code or documentation that explains this data?"
 3. Generate assets:
-   - `tables_inventory.json` via duckdb CLI (includes default enum detection config)
+   - `tables_inventory.json` via duckdb CLI
    - `schema_<filename>.sql` for each database
    - Draft `data_dictionary.md` with rich structure (domains, table entries, relationships)
-   - `OBSERVATIONS.md` with AI-inferred facts
-4. Run enum detection (see below) and add results to OBSERVATIONS.md
-5. Present OBSERVATIONS.md for bulk review
-6. Merge approved observations into dictionary
+4. Run enum detection with hardcoded thresholds (max_cardinality=20, max_ratio=0.05, sample_size=10000)
+5. Present findings:
+   - If 1-2 enums: Ask inline per enum
+   - If 3+ enums: Present bulk summary for approval
+6. If approved, update `data_dictionary.md` directly with enum documentation
 
 ### 2. Query Generation
 
@@ -74,7 +73,7 @@ When `duckdb_sql_assets/` doesn't exist:
 3. **Step 1:** Present query plan (tables, joins, filters)
 4. User approves plan
 5. **Step 2:** Validate against schema files, generate SQL
-6. If something new is learned, add to OBSERVATIONS.md
+6. If something new is learned, ask user if it should be added to the data dictionary
 
 ### 3. Schema Update Detection
 
@@ -86,48 +85,39 @@ On skill invocation, check for changes:
 
 Update actions:
 - Removed files: Delete schema file, update inventory and dictionary
-- Added files: Generate schema, update inventory, add dictionary stubs, infer observations
-- Schema changes: Regenerate schema file, update inventory
+- Added files: Generate schema, update inventory, add dictionary stubs, run enum detection and present findings
+- Schema changes: Regenerate schema file, update inventory, run enum detection on new VARCHAR/TEXT columns
 
-### 4. Observation Approval
+### 4. Inline Fact Discovery
 
-1. User edits OBSERVATIONS.md, checking `[x]` for approved facts
-2. User says "merge approved observations"
-3. Skill moves approved facts to `data_dictionary.md`
-4. Facts archived in "## Merged" section with date
+When the skill discovers new information about the data:
+
+1. **For 1-2 facts:** Ask inline "I discovered [fact]. Should I add this to the data dictionary?"
+2. **For 3+ facts:** Present summary in one message and ask for bulk decision
+3. **User options:**
+   - "Yes" → Add to data_dictionary.md immediately
+   - "Show diff first" → Describe changes, then user decides
+   - "Add only X, Y" → Add subset
+   - "No" → Skip
+4. **After approval:** Use Edit tool to update data_dictionary.md, report what was changed
 
 ### 5. Enum Detection
 
-During setup and on-demand, the skill scans for likely enum columns.
+During setup and on-demand, the skill scans for likely enum columns using hardcoded thresholds:
 
-**Happy Path:** Defaults work automatically for most datasets. User just reviews and approves observations.
-
-**Configuration** (in `tables_inventory.json`):
-```json
-{
-  "enum_detection": {
-    "max_cardinality": 20,
-    "max_ratio": 0.05,
-    "sample_size": 10000,
-    "name_patterns": ["status", "type", "state", "category", "level", "role", "kind"]
-  }
-}
-```
-
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `max_cardinality` | 20 | Max distinct values to consider as enum |
-| `max_ratio` | 0.05 | Max ratio of distinct/total rows (5%) |
-| `sample_size` | 10000 | Rows to sample per table |
-| `name_patterns` | [...] | Column name patterns that suggest enums |
+**Hardcoded Thresholds:**
+- `max_cardinality`: 20 (max distinct values)
+- `max_ratio`: 0.05 (max 5% unique values in sample)
+- `sample_size`: 10000 (rows to sample per table)
+- `name_patterns`: ["status", "type", "state", "category", "level", "role", "kind"] (prioritized columns)
 
 **Detection Heuristics:**
 A column is flagged as likely enum if ALL are true:
 1. Type is VARCHAR or TEXT
-2. `distinct_count <= max_cardinality`
-3. `distinct_count / sampled_rows < max_ratio`
+2. `distinct_count <= 20`
+3. `distinct_count / sampled_rows < 0.05`
 
-**Re-running:** User edits config in `tables_inventory.json`, then says "re-run enum detection".
+**Re-running:** User can request different thresholds conversationally (e.g., "detect enums with up to 50 values").
 
 ---
 
@@ -139,12 +129,6 @@ A column is flagged as likely enum if ALL are true:
 {
   "generated_at": "2025-12-11T17:30:00Z",
   "duckdb_version": "v1.3.2",
-  "enum_detection": {
-    "max_cardinality": 20,
-    "max_ratio": 0.05,
-    "sample_size": 10000,
-    "name_patterns": ["status", "type", "state", "category", "level", "role", "kind"]
-  },
   "sources": [
     {
       "file_path": "/absolute/path/to/file.ddb",
@@ -245,25 +229,6 @@ Order processing and transactions.
 - `pending` - Awaiting processing
 - `completed` - Successfully finished
 - `cancelled` - User cancelled
-```
-
-### OBSERVATIONS.md
-
-```markdown
-# Observations
-
-## Pending Approval
-
-### YYYY-MM-DD
-- [ ] Fact 1 about the data
-- [ ] Fact 2 about relationships
-- [x] Approved fact (ready to merge)
-
-## Approved (to be merged)
-[Facts checked off, awaiting merge command]
-
-## Merged
-[Historical record with dates]
 ```
 
 ---
@@ -444,5 +409,4 @@ Generated assets (created per-project in `duckdb_sql_assets/`):
 |------|---------|
 | tables_inventory.json | Manifest of source files and tables |
 | schema_*.sql | One schema file per database |
-| data_dictionary.md | Semantic documentation |
-| OBSERVATIONS.md | Staging area for learned facts |
+| data_dictionary.md | Semantic documentation (editable by user) |

@@ -45,7 +45,7 @@ When you first use the skill in a project, it will:
 1. Ask which .ddb files to document
 2. Ask if you have supplementary documentation (code, READMEs, etc.)
 3. Generate assets in `duckdb_sql_assets/` directory
-4. Present inferred observations for your approval
+4. Detect likely enum columns and ask for your approval to add them
 
 ### Example Questions
 
@@ -71,14 +71,13 @@ The skill creates and maintains these files in `duckdb_sql_assets/`:
 |------|---------|
 | `tables_inventory.json` | Manifest of source files and table metadata |
 | `schema_<filename>.sql` | Schema dump for each DuckDB file |
-| `data_dictionary.md` | Semantic documentation (AI + user enhanced) |
-| `OBSERVATIONS.md` | Staging area for learned facts |
+| `data_dictionary.md` | Semantic documentation (AI + user enhanced, editable) |
 
 ### Asset Workflow
 
 1. **Schema files** are auto-generated from your .ddb files
-2. **Observations** are collected as you use the skill
-3. **You approve** observations before they're added to the dictionary
+2. **Discovered facts** are presented for approval during conversations
+3. **You approve** facts before they're added to the data dictionary
 4. **Data dictionary** grows over time with verified information
 
 ## Updating Assets
@@ -92,7 +91,7 @@ The skill will detect missing files and ask to clean up
 ### Refresh after schema changes
 The skill detects schema changes and offers to update
 
-## Observations Workflow
+## Learning About Your Data
 
 As you use the skill, it learns facts about your data:
 - Column purposes
@@ -100,10 +99,12 @@ As you use the skill, it learns facts about your data:
 - Type conversion requirements
 - Business logic patterns
 
-These facts go to `OBSERVATIONS.md` for your review. To merge approved observations:
-1. Edit `OBSERVATIONS.md` and check the boxes `[x]` for facts you approve
-2. Tell the skill: "merge approved observations"
-3. Facts are added to `data_dictionary.md`
+When the skill discovers new information, it will ask if you want to add it to the data dictionary:
+- **For 1-2 discoveries**: Asked inline during the conversation
+- **For 3+ discoveries**: Presented as a summary for bulk approval
+- **You can always**: Request to see the diff first before approving
+
+Facts you approve are added directly to `data_dictionary.md`, which you can also edit manually at any time.
 
 ## Multi-File Queries
 

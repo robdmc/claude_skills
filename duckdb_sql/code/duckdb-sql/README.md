@@ -128,8 +128,8 @@ Facts you approve are added directly to `data_dictionary.md`, which you can also
 
 **Across .ddb files** (uses ATTACH):
 ```sql
-ATTACH '/path/to/other.ddb' AS other_db;
-SELECT * FROM main_table JOIN other_db.other_table ON ...;
+ATTACH IF NOT EXISTS '/path/to/other.ddb' AS _db_other;
+SELECT * FROM main_table JOIN _db_other.other_table ON ...;
 ```
 
 **Across CSV/Parquet files** (direct file paths):

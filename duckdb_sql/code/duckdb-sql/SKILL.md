@@ -207,10 +207,10 @@ When storing paths in `tables_inventory.json`, preserve whatever path style the 
 
 ### ATTACH Alias Convention
 
-Use `db_` prefix + filename slug for all ATTACH aliases:
-- `sales.ddb` → `AS db_sales`
-- `inventory.ddb` → `AS db_inventory`
-- `my-data-2024.ddb` → `AS db_my_data_2024`
+Use `_db_` prefix (underscore first) + filename slug for all ATTACH aliases:
+- `sales.ddb` → `AS _db_sales`
+- `inventory.ddb` → `AS _db_inventory`
+- `my-data-2024.ddb` → `AS _db_my_data_2024`
 
 ### Standard Query Preamble
 
@@ -218,20 +218,20 @@ For any query involving `.ddb` files, include ATTACH statements at the top:
 
 ```sql
 -- Setup: Attach database files
-ATTACH 'data/sales.ddb' AS db_sales;
-ATTACH 'data/inventory.ddb' AS db_inventory;
+ATTACH IF NOT EXISTS 'data/sales.ddb' AS _db_sales;
+ATTACH IF NOT EXISTS 'data/inventory.ddb' AS _db_inventory;
 
 -- Query
 SELECT c.name, o.total_amount
-FROM db_sales.customers c
-JOIN db_sales.orders o ON c.customer_id = o.customer_id;
+FROM _db_sales.customers c
+JOIN _db_sales.orders o ON c.customer_id = o.customer_id;
 ```
 
 ### Reference Patterns by File Type
 
 | File Type | How to Reference | Example |
 |-----------|------------------|---------|
-| `.ddb` table | `db_alias.tablename` after ATTACH | `db_sales.customers` |
+| `.ddb` table | `_db_alias.tablename` after ATTACH | `_db_sales.customers` |
 | CSV file | File path in quotes | `'data/transactions.csv'` |
 | Parquet file | File path in quotes | `'data/events.parquet'` |
 | Glob pattern | Glob in quotes | `'logs/*.csv'` |
@@ -240,14 +240,14 @@ JOIN db_sales.orders o ON c.customer_id = o.customer_id;
 
 ```sql
 -- Attach DuckDB databases
-ATTACH 'data/sales.ddb' AS db_sales;
+ATTACH IF NOT EXISTS 'data/sales.ddb' AS _db_sales;
 
 -- Query: Join DuckDB table to CSV file
 SELECT
     c.name,
     t.amount,
     t.transaction_date
-FROM db_sales.customers c
+FROM _db_sales.customers c
 JOIN 'data/transactions.csv' t ON c.customer_id = t.customer_id
 WHERE t.amount > 100;
 ```
@@ -475,13 +475,13 @@ Before generating ANY SQL query, you MUST validate every table and column:
 ```
 **Query Plan:**
 - **Attach statements needed:**
-  - `ATTACH 'data/sales.ddb' AS db_sales`
+  - `ATTACH IF NOT EXISTS 'data/sales.ddb' AS _db_sales`
 - **Tables:**
-  - db_sales.customers (c) - Customer records [from sales.ddb]
-  - db_sales.orders (o) - Order transactions [from sales.ddb]
+  - _db_sales.customers (c) - Customer records [from sales.ddb]
+  - _db_sales.orders (o) - Order transactions [from sales.ddb]
   - 'data/extra.csv' - Additional data [CSV file]
 - **Joins:**
-  - db_sales.customers → db_sales.orders on customer_id
+  - _db_sales.customers → _db_sales.orders on customer_id
 - **Filters:**
   - Optional: date range on order_date
   - Optional: status filter
@@ -510,7 +510,7 @@ Once the user approves the query plan, provide:
 
 ```sql
 -- Attach required databases
-ATTACH 'data/sales.ddb' AS db_sales;
+ATTACH IF NOT EXISTS 'data/sales.ddb' AS _db_sales;
 
 -- Query: Orders from January 2024 with customer details
 SELECT
@@ -520,8 +520,8 @@ SELECT
     o.order_date,
     o.total_amount,
     o.status
-FROM db_sales.customers c
-JOIN db_sales.orders o ON c.customer_id = o.customer_id
+FROM _db_sales.customers c
+JOIN _db_sales.orders o ON c.customer_id = o.customer_id
 WHERE o.order_date >= '2024-01-01'
   AND o.order_date < '2024-02-01'
 ORDER BY o.order_date DESC;
@@ -657,21 +657,21 @@ All queries run in an **in-memory DuckDB session** (`duckdb` with no file argume
 ### Single .ddb File
 
 ```sql
-ATTACH 'data/sales.ddb' AS db_sales;
+ATTACH IF NOT EXISTS 'data/sales.ddb' AS _db_sales;
 
-SELECT * FROM db_sales.customers;
+SELECT * FROM _db_sales.customers;
 ```
 
 ### Multiple .ddb Files
 
 ```sql
-ATTACH 'data/sales.ddb' AS db_sales;
-ATTACH 'data/inventory.ddb' AS db_inventory;
+ATTACH IF NOT EXISTS 'data/sales.ddb' AS _db_sales;
+ATTACH IF NOT EXISTS 'data/inventory.ddb' AS _db_inventory;
 
 SELECT c.name, o.total_amount, p.name AS product_name
-FROM db_sales.customers c
-JOIN db_sales.orders o ON c.customer_id = o.customer_id
-JOIN db_inventory.products p ON o.product_id = p.product_id;
+FROM _db_sales.customers c
+JOIN _db_sales.orders o ON c.customer_id = o.customer_id
+JOIN _db_inventory.products p ON o.product_id = p.product_id;
 ```
 
 ### CSV/Parquet Files (no ATTACH needed)
@@ -693,13 +693,13 @@ JOIN 'data/metadata.csv' m ON e.event_type = m.type_code;
 ### Mixed: .ddb + CSV/Parquet
 
 ```sql
-ATTACH 'data/sales.ddb' AS db_sales;
+ATTACH IF NOT EXISTS 'data/sales.ddb' AS _db_sales;
 
 SELECT
     c.name,
     t.amount,
     t.transaction_date
-FROM db_sales.customers c
+FROM _db_sales.customers c
 JOIN 'data/transactions.csv' t ON c.customer_id = t.customer_id;
 ```
 

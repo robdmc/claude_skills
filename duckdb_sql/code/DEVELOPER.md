@@ -22,8 +22,8 @@ This document provides complete context for iterating on and improving the duckd
 | CSV auto-detection | Trust DuckDB defaults | Auto-detects delimiter, headers, types; user can override conversationally |
 | Table naming (CSV/Parquet) | Computed snake_case slug | Filename converted to valid unquoted DuckDB identifier |
 | Glob patterns | User choice: separate or combined | Ask user whether to treat matched files as separate tables or single virtual table |
-| Query execution model | In-memory DuckDB session | All queries use ATTACH for .ddb files, file paths for CSV/Parquet |
-| ATTACH alias convention | `db_` prefix + filename slug | `sales.ddb` → `AS db_sales` for consistent, clear naming |
+| Query execution model | In-memory DuckDB session | All queries use ATTACH IF NOT EXISTS for .ddb files, file paths for CSV/Parquet |
+| ATTACH alias convention | `_db_` prefix + filename slug | `sales.ddb` → `AS _db_sales` for consistent, clear naming |
 
 ### Key Principles
 
@@ -31,7 +31,7 @@ This document provides complete context for iterating on and improving the duckd
 2. **Use existing assets first** - When `duckdb_sql_assets/` exists, READ the files; never regenerate schema unless explicitly requested
 3. **User approval for all facts** - All AI-inferred facts require user approval via inline questions before dictionary entry
 4. **Two-step query workflow** - Present plan for approval before writing SQL
-5. **In-memory query execution** - All queries work in `duckdb` (no file argument); .ddb files use ATTACH with `db_` prefix aliases
+5. **In-memory query execution** - All queries work in `duckdb` (no file argument); .ddb files use ATTACH IF NOT EXISTS with `_db_` prefix aliases
 6. **Conversational setup** - Guide user through initial configuration
 7. **Display-only by default** - Generate and display queries; only execute when user explicitly requests
 
@@ -374,7 +374,7 @@ Key differences from PostgreSQL:
 | Case-insensitive LIKE | `ILIKE` | `ILIKE` |
 | Date truncate | `date_trunc('month', col)` | Same |
 | Type cast | `col::TYPE` or `CAST()` | Same |
-| Multi-file | `ATTACH 'file.ddb' AS alias` | N/A |
+| Multi-file | `ATTACH IF NOT EXISTS 'file.ddb' AS _db_alias` | N/A |
 
 ### Multi-File Query Patterns
 
@@ -382,20 +382,20 @@ All queries run in an **in-memory DuckDB session** (`duckdb` with no file argume
 
 **Single .ddb file:**
 ```sql
-ATTACH '/path/to/sales.ddb' AS db_sales;
+ATTACH IF NOT EXISTS '/path/to/sales.ddb' AS _db_sales;
 
-SELECT * FROM db_sales.customers;
+SELECT * FROM _db_sales.customers;
 ```
 
 **Multiple .ddb files:**
 ```sql
-ATTACH '/path/to/sales.ddb' AS db_sales;
-ATTACH '/path/to/inventory.ddb' AS db_inventory;
+ATTACH IF NOT EXISTS '/path/to/sales.ddb' AS _db_sales;
+ATTACH IF NOT EXISTS '/path/to/inventory.ddb' AS _db_inventory;
 
 SELECT c.name, o.total_amount, p.name AS product_name
-FROM db_sales.customers c
-JOIN db_sales.orders o ON c.customer_id = o.customer_id
-JOIN db_inventory.products p ON o.product_id = p.product_id;
+FROM _db_sales.customers c
+JOIN _db_sales.orders o ON c.customer_id = o.customer_id
+JOIN _db_inventory.products p ON o.product_id = p.product_id;
 ```
 
 **CSV/Parquet files (direct file paths, no ATTACH):**
@@ -406,10 +406,10 @@ JOIN '/path/to/customers.parquet' c ON o.customer_id = c.id;
 
 **Mixed .ddb + CSV/Parquet:**
 ```sql
-ATTACH '/path/to/sales.ddb' AS db_sales;
+ATTACH IF NOT EXISTS '/path/to/sales.ddb' AS _db_sales;
 
 SELECT c.name, t.amount
-FROM db_sales.customers c
+FROM _db_sales.customers c
 JOIN '/path/to/transactions.csv' t ON c.customer_id = t.customer_id;
 ```
 
@@ -472,7 +472,7 @@ CREATE TABLE stock(
 );
 ```
 
-**Cross-file join example:** In an in-memory session, use `ATTACH '/path/to/sales.ddb' AS db_sales` then reference tables as `db_sales.orders`, `db_sales.customers`.
+**Cross-file join example:** In an in-memory session, use `ATTACH IF NOT EXISTS '/path/to/sales.ddb' AS _db_sales` then reference tables as `_db_sales.orders`, `_db_sales.customers`.
 
 ### CSV Test Files
 
@@ -507,10 +507,10 @@ duckdb -c "COPY (SELECT * FROM 'products.csv') TO 'products.parquet' (FORMAT PAR
 Test queries across file types (all run in in-memory session):
 ```sql
 -- Attach DuckDB database, join to CSV
-ATTACH 'sales.ddb' AS db_sales;
+ATTACH IF NOT EXISTS 'sales.ddb' AS _db_sales;
 
 SELECT c.name, t.amount
-FROM db_sales.customers c
+FROM _db_sales.customers c
 JOIN 'transactions.csv' t ON c.customer_id = t.customer_id;
 
 -- Join CSV to Parquet (no ATTACH needed)

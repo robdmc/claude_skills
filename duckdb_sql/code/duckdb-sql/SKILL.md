@@ -1,6 +1,6 @@
 ---
 name: duckdb-sql
-description: Generate DuckDB SQL queries. Use when user asks about DuckDB queries, data analysis, exploring .ddb database files, CSV files, Parquet files, or wants help editing/improving SQL.
+description: Generate DuckDB SQL queries. Use when user asks about DuckDB queries, data analysis, exploring .ddb database files, CSV files, Parquet files, wants help editing/improving SQL, asks to use the duckdb skill, references duckdb assets, or wants to initialize/setup duckdb analysis.
 allowed-tools: Read, Grep, Glob, Bash
 ---
 
@@ -56,12 +56,23 @@ You are a DuckDB query assistant. Your role is to help users:
 
 ## Asset Directory
 
+**Terminology:** When users refer to "assets", "the assets", or "duckdb assets", they mean the `duckdb_sql_assets/` directory.
+
 All project-specific documentation lives in `duckdb_sql_assets/` in the working directory:
 - `tables_inventory.json` - Manifest of source files and table metadata
 - `schema_<filename>.sql` - Schema files (one per source file: .ddb, .csv, or .parquet)
 - `data_dictionary.md` - Semantic documentation of tables and fields (editable by user)
 
 **Default behavior:** If `duckdb_sql_assets/` already exists, proceed directly to answering the user's question using the existing documentation. Do NOT check for schema changes unless explicitly asked. See [Schema Update Detection](#schema-update-detection-on-demand-only) for trigger phrases.
+
+## Continuing the Conversation
+
+**On every follow-up question or request:**
+- DO NOT re-extract schema from database files
+- DO NOT run `duckdb` commands to verify table structure
+- ALWAYS use the existing asset files (`tables_inventory.json`, `schema_*.sql`, `data_dictionary.md`)
+
+The assets are your source of truth. If they seem outdated, ask the user if they want to refresh them rather than bypassing them.
 
 ## How to Use These Docs
 
@@ -256,6 +267,21 @@ WHERE t.amount > 100;
 
 When a user asks about DuckDB data and `duckdb_sql_assets/` doesn't exist:
 
+**Initialization trigger phrases** - These phrases explicitly request setup:
+- "initialize an analysis"
+- "create assets"
+- "initialize your DuckDB skill"
+- "use your DuckDB skill in this project"
+- "set up duckdb"
+- "setup duckdb"
+
+When any of these phrases are used:
+1. Check if `duckdb_sql_assets/` exists - if it does, inform user assets already exist
+2. If no specific files are mentioned in the request, proceed to step 2 below to prompt for files
+3. If files are mentioned, skip the prompt and proceed directly with those files
+
+---
+
 1. **Verify DuckDB CLI is installed:**
    ```bash
    duckdb -version
@@ -415,6 +441,8 @@ When users ask about what data exists ("Do we have...?", "Where is...?", "What t
 
 Before generating ANY SQL query, you MUST validate every table and column:
 
+**Source of truth:** Use ONLY the asset files for validation. Do NOT run `duckdb` commands to check schema.
+
 1. **Verify all table names exist** - Check `tables_inventory.json` or schema files
 2. **Verify all column names exist** - Check the specific `schema_<filename>.sql`
 3. **Verify column types match usage** - Ensure you're comparing compatible types (e.g., don't compare VARCHAR to INTEGER without casting)
@@ -466,6 +494,8 @@ Before generating ANY SQL query, you MUST validate every table and column:
 ## Query Generation - Two-Step Workflow
 
 **ALWAYS present a query plan first** before writing SQL.
+
+**Reminder:** Reference only the asset files for table/column information. Never run `duckdb` CLI to fetch schema.
 
 ### Step 1: Present Query Plan for Approval
 

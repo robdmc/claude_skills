@@ -229,8 +229,8 @@ For any query involving `.ddb` files, include ATTACH statements at the top:
 
 ```sql
 -- Setup: Attach database files
-ATTACH IF NOT EXISTS 'data/sales.ddb' AS _db_sales;
-ATTACH IF NOT EXISTS 'data/inventory.ddb' AS _db_inventory;
+ATTACH IF NOT EXISTS 'data/sales.ddb' AS _db_sales (READ_ONLY);
+ATTACH IF NOT EXISTS 'data/inventory.ddb' AS _db_inventory (READ_ONLY);
 
 -- Query
 SELECT c.name, o.total_amount
@@ -251,7 +251,7 @@ JOIN _db_sales.orders o ON c.customer_id = o.customer_id;
 
 ```sql
 -- Attach DuckDB databases
-ATTACH IF NOT EXISTS 'data/sales.ddb' AS _db_sales;
+ATTACH IF NOT EXISTS 'data/sales.ddb' AS _db_sales (READ_ONLY);
 
 -- Query: Join DuckDB table to CSV file
 SELECT
@@ -505,7 +505,7 @@ Before generating ANY SQL query, you MUST validate every table and column:
 ```
 **Query Plan:**
 - **Attach statements needed:**
-  - `ATTACH IF NOT EXISTS 'data/sales.ddb' AS _db_sales`
+  - `ATTACH IF NOT EXISTS 'data/sales.ddb' AS _db_sales (READ_ONLY)`
 - **Tables:**
   - _db_sales.customers (c) - Customer records [from sales.ddb]
   - _db_sales.orders (o) - Order transactions [from sales.ddb]
@@ -540,7 +540,7 @@ Once the user approves the query plan, provide:
 
 ```sql
 -- Attach required databases
-ATTACH IF NOT EXISTS 'data/sales.ddb' AS _db_sales;
+ATTACH IF NOT EXISTS 'data/sales.ddb' AS _db_sales (READ_ONLY);
 
 -- Query: Orders from January 2024 with customer details
 SELECT
@@ -687,7 +687,7 @@ All queries run in an **in-memory DuckDB session** (`duckdb` with no file argume
 ### Single .ddb File
 
 ```sql
-ATTACH IF NOT EXISTS 'data/sales.ddb' AS _db_sales;
+ATTACH IF NOT EXISTS 'data/sales.ddb' AS _db_sales (READ_ONLY);
 
 SELECT * FROM _db_sales.customers;
 ```
@@ -695,8 +695,8 @@ SELECT * FROM _db_sales.customers;
 ### Multiple .ddb Files
 
 ```sql
-ATTACH IF NOT EXISTS 'data/sales.ddb' AS _db_sales;
-ATTACH IF NOT EXISTS 'data/inventory.ddb' AS _db_inventory;
+ATTACH IF NOT EXISTS 'data/sales.ddb' AS _db_sales (READ_ONLY);
+ATTACH IF NOT EXISTS 'data/inventory.ddb' AS _db_inventory (READ_ONLY);
 
 SELECT c.name, o.total_amount, p.name AS product_name
 FROM _db_sales.customers c
@@ -723,7 +723,7 @@ JOIN 'data/metadata.csv' m ON e.event_type = m.type_code;
 ### Mixed: .ddb + CSV/Parquet
 
 ```sql
-ATTACH IF NOT EXISTS 'data/sales.ddb' AS _db_sales;
+ATTACH IF NOT EXISTS 'data/sales.ddb' AS _db_sales (READ_ONLY);
 
 SELECT
     c.name,

@@ -128,7 +128,7 @@ Facts you approve are added directly to `data_dictionary.md`, which you can also
 
 **Across .ddb files** (uses ATTACH):
 ```sql
-ATTACH IF NOT EXISTS '/path/to/other.ddb' AS _db_other;
+ATTACH IF NOT EXISTS '/path/to/other.ddb' AS _db_other (READ_ONLY);
 SELECT * FROM main_table JOIN _db_other.other_table ON ...;
 ```
 

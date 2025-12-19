@@ -374,7 +374,7 @@ Key differences from PostgreSQL:
 | Case-insensitive LIKE | `ILIKE` | `ILIKE` |
 | Date truncate | `date_trunc('month', col)` | Same |
 | Type cast | `col::TYPE` or `CAST()` | Same |
-| Multi-file | `ATTACH IF NOT EXISTS 'file.ddb' AS _db_alias` | N/A |
+| Multi-file | `ATTACH IF NOT EXISTS 'file.ddb' AS _db_alias (READ_ONLY)` | N/A |
 
 ### Multi-File Query Patterns
 
@@ -382,15 +382,15 @@ All queries run in an **in-memory DuckDB session** (`duckdb` with no file argume
 
 **Single .ddb file:**
 ```sql
-ATTACH IF NOT EXISTS '/path/to/sales.ddb' AS _db_sales;
+ATTACH IF NOT EXISTS '/path/to/sales.ddb' AS _db_sales (READ_ONLY);
 
 SELECT * FROM _db_sales.customers;
 ```
 
 **Multiple .ddb files:**
 ```sql
-ATTACH IF NOT EXISTS '/path/to/sales.ddb' AS _db_sales;
-ATTACH IF NOT EXISTS '/path/to/inventory.ddb' AS _db_inventory;
+ATTACH IF NOT EXISTS '/path/to/sales.ddb' AS _db_sales (READ_ONLY);
+ATTACH IF NOT EXISTS '/path/to/inventory.ddb' AS _db_inventory (READ_ONLY);
 
 SELECT c.name, o.total_amount, p.name AS product_name
 FROM _db_sales.customers c
@@ -406,7 +406,7 @@ JOIN '/path/to/customers.parquet' c ON o.customer_id = c.id;
 
 **Mixed .ddb + CSV/Parquet:**
 ```sql
-ATTACH IF NOT EXISTS '/path/to/sales.ddb' AS _db_sales;
+ATTACH IF NOT EXISTS '/path/to/sales.ddb' AS _db_sales (READ_ONLY);
 
 SELECT c.name, t.amount
 FROM _db_sales.customers c
@@ -472,7 +472,7 @@ CREATE TABLE stock(
 );
 ```
 
-**Cross-file join example:** In an in-memory session, use `ATTACH IF NOT EXISTS '/path/to/sales.ddb' AS _db_sales` then reference tables as `_db_sales.orders`, `_db_sales.customers`.
+**Cross-file join example:** In an in-memory session, use `ATTACH IF NOT EXISTS '/path/to/sales.ddb' AS _db_sales (READ_ONLY)` then reference tables as `_db_sales.orders`, `_db_sales.customers`.
 
 ### CSV Test Files
 
@@ -507,7 +507,7 @@ duckdb -c "COPY (SELECT * FROM 'products.csv') TO 'products.parquet' (FORMAT PAR
 Test queries across file types (all run in in-memory session):
 ```sql
 -- Attach DuckDB database, join to CSV
-ATTACH IF NOT EXISTS 'sales.ddb' AS _db_sales;
+ATTACH IF NOT EXISTS 'sales.ddb' AS _db_sales (READ_ONLY);
 
 SELECT c.name, t.amount
 FROM _db_sales.customers c

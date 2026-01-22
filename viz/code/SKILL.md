@@ -229,6 +229,37 @@ When refining an existing plot:
 3. Executes with a new ID (e.g., `pop_bar_2`)
 4. Both versions remain available for comparison
 
+## Regeneration
+
+When a user asks to regenerate an existing plot (e.g., after data has changed):
+
+### By ID
+Request: "regenerate pop_bar"
+
+Run the saved script directly:
+```bash
+python /tmp/viz/pop_bar.py
+```
+
+The script already contains the hardcoded savefig path, so it overwrites the existing PNG.
+
+### By Description
+Request: "regenerate the churn plot"
+
+1. Run `--list` to find matching plot
+2. Identify the ID from the description
+3. Run `python /tmp/viz/<id>.py`
+
+### Ambiguous Request
+Request: "regenerate a plot"
+
+1. Run `--list` to show available plots
+2. Ask user which one to regenerate
+3. Run the selected script
+
+### Key Point
+Regeneration does NOT require `viz_runner.py` - the saved `.py` scripts are self-contained and can be executed directly with `python`.
+
 ## Interactive Backend Note
 
 Generated scripts use `plt.show()` which works with the `macosx` backend for interactive display. The injected `savefig()` ensures a PNG copy is always saved before display.

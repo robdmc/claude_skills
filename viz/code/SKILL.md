@@ -1,10 +1,10 @@
 ---
 name: viz
-description: Visualization factory that generates matplotlib/seaborn plotting functions. Use when you need a function to create a specific visualization. Provide a natural language spec describing the plot type, data context, axis labels, title, and any special requirements. Returns executable Python function code.
+description: Data visualization and inspection skill. Use for (1) creating matplotlib/seaborn plots from data files or marimo notebooks, or (2) inspecting DataFrames by showing first N rows, column names, and dtypes. For plots, provide chart type, data context, and styling. For inspection, ask to "show" or "display" the data.
 allowed-tools: Read, Glob(/tmp/viz/*), Grep(/tmp/viz/*), Bash(python /Users/rob/.claude/skills/viz/viz_runner.py:*)
 ---
 
-# Viz Skill: Direct Execution Visualization
+# Viz Skill: Data Visualization and Inspection
 
 ## Purpose
 

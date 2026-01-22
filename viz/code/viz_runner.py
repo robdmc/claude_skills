@@ -17,9 +17,11 @@ The runner:
 """
 
 import argparse
+import json
 import re
 import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -87,33 +89,52 @@ def inject_savefig(script: str, png_path: str) -> str:
     return modified
 
 
-def run_script(script_path: Path) -> tuple[bool, str]:
+def run_script_background(script_path: Path, png_path: Path) -> tuple[bool, int, str]:
     """
-    Execute the script and return (success, output).
+    Execute the script in background and wait for PNG to be created.
+    Returns (success, pid, message).
+
+    The script runs as a detached process so plt.show() doesn't block.
+    Since savefig() is injected BEFORE plt.show(), the PNG gets created
+    immediately while the interactive window stays open.
     """
     try:
-        result = subprocess.run(
+        # Start script as detached background process
+        process = subprocess.Popen(
             [sys.executable, str(script_path)],
-            capture_output=True,
-            text=True,
-            timeout=120,  # 2 minute timeout
+            start_new_session=True,  # Detach from terminal
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
             cwd=str(VIZ_DIR),
         )
 
-        output = result.stdout
-        if result.stderr:
-            output += "\n" + result.stderr
+        # Poll for PNG (savefig happens before plt.show)
+        max_wait = 3.0
+        poll_interval = 0.1
+        waited = 0.0
 
-        return result.returncode == 0, output.strip()
-    except subprocess.TimeoutExpired:
-        return False, "Error: Script execution timed out (120s limit)"
+        while waited < max_wait:
+            if png_path.exists():
+                return True, process.pid, "Plot window opened"
+            time.sleep(poll_interval)
+            waited += poll_interval
+
+            # Check if process failed early
+            if process.poll() is not None:
+                stderr = process.stderr.read().decode() if process.stderr else ""
+                return False, 0, f"Script failed: {stderr}"
+
+        # Timeout waiting for PNG
+        return False, process.pid, "Timeout waiting for PNG (script may still be running)"
+
     except Exception as e:
-        return False, f"Error executing script: {e}"
+        return False, 0, f"Error: {e}"
 
 
 def main():
     parser = argparse.ArgumentParser(description="Viz Runner - artifact management for viz skill")
     parser.add_argument("--id", dest="suggested_id", help="Suggested ID for the visualization")
+    parser.add_argument("--desc", dest="description", help="Description of the visualization")
     parser.add_argument("--file", dest="script_file", help="Path to script file (alternative to stdin)")
     args = parser.parse_args()
 
@@ -152,21 +173,33 @@ def main():
     # Write script
     script_path.write_text(modified_script)
 
-    # Execute script
-    success, output = run_script(script_path)
+    # Execute script in background (non-blocking)
+    success, pid, message = run_script_background(script_path, png_path)
 
-    # Print results
-    print(f"id: {final_id}")
-    print(f"script: {script_path}")
-    print(f"png: {png_path}")
-    print(f"success: {success}")
+    # Write sidecar JSON metadata file
+    json_path = VIZ_DIR / f"{final_id}.json"
+    metadata = {
+        "id": final_id,
+        "desc": args.description,
+        "png": str(png_path),
+        "script": str(script_path),
+        "created": datetime.now().isoformat(timespec="seconds"),
+        "pid": pid,
+    }
+    json_path.write_text(json.dumps(metadata, indent=2))
 
-    if output:
-        print(f"output: {output}")
+    # Print human-readable output
+    print(f"Plot: {final_id}")
+    if args.description:
+        print(f'  "{args.description}"')
+    print(f"  png: {png_path}")
+
+    if not success:
+        print(f"  error: {message}")
 
     # Check if PNG was actually created
     if success and not png_path.exists():
-        print("warning: Script executed but PNG was not created")
+        print("  warning: Script executed but PNG was not created")
 
     sys.exit(0 if success else 1)
 

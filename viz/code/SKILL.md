@@ -1,7 +1,7 @@
 ---
 name: viz
 description: Visualization factory that generates matplotlib/seaborn plotting functions. Use when you need a function to create a specific visualization. Provide a natural language spec describing the plot type, data context, axis labels, title, and any special requirements. Returns executable Python function code.
-allowed-tools: Read, Bash
+allowed-tools: Read, Glob(/tmp/viz/*), Grep(/tmp/viz/*), Bash(python /Users/rob/.claude/skills/viz/viz_runner.py:*)
 ---
 
 # Viz Skill: Direct Execution Visualization
@@ -44,7 +44,7 @@ All artifacts are managed in `/tmp/viz/` via the helper script.
 ### Helper: `viz_runner.py`
 
 ```bash
-python /Users/rob/.claude/skills/viz/viz_runner.py [--id NAME] << 'EOF'
+python /Users/rob/.claude/skills/viz/viz_runner.py [--id NAME] [--desc "Description"] << 'EOF'
 <generated script>
 EOF
 ```
@@ -55,28 +55,42 @@ The runner:
 3. Injects `plt.savefig('/tmp/viz/<id>.png', dpi=150, bbox_inches='tight')` before `plt.show()`
 4. Writes the script to `/tmp/viz/<id>.py`
 5. Executes the script
-6. Prints results to stdout
+6. Writes metadata to `/tmp/viz/<id>.json`
+7. Prints human-readable results to stdout
 
 ### Output Format
 
+Terminal output:
 ```
-id: pop_bar_01
-script: /tmp/viz/pop_bar_01.py
-png: /tmp/viz/pop_bar_01.png
-success: True
+Plot: pop_bar
+  "Bar chart of members by month"
+  png: /tmp/viz/pop_bar.png
+```
+
+Sidecar JSON (`/tmp/viz/<id>.json`):
+```json
+{
+  "id": "pop_bar",
+  "desc": "Bar chart of members by month",
+  "png": "/tmp/viz/pop_bar.png",
+  "script": "/tmp/viz/pop_bar.py",
+  "created": "2025-01-22T11:31:00",
+  "pid": 46368
+}
 ```
 
 The caller can then:
 - Read the PNG into context to discuss the plot
 - Reference the script for modifications
+- Look up plots by ID or description via the JSON metadata
 
 ## Skill Workflow
 
 1. **Infer data loading**: From the provided context, generate Python code to load/create the DataFrame
 2. **Generate visualization**: Add matplotlib/seaborn code for the requested plot
-3. **Execute via runner**:
+3. **Execute via runner** (always include `--desc` with a short summary):
    ```bash
-   python /Users/rob/.claude/skills/viz/viz_runner.py --id suggested_name << 'EOF'
+   python /Users/rob/.claude/skills/viz/viz_runner.py --id suggested_name --desc "Short description of plot" << 'EOF'
    <complete script>
    EOF
    ```
@@ -123,7 +137,7 @@ Use seaborn for the statistical plot, matplotlib for customizations like referen
 
 **Skill generates and executes:**
 ```bash
-python /Users/rob/.claude/skills/viz/viz_runner.py --id pop_bar << 'EOF'
+python /Users/rob/.claude/skills/viz/viz_runner.py --id pop_bar --desc "Bar chart of members by month with forecast boundary" << 'EOF'
 import duckdb
 import matplotlib.pyplot as plt
 import numpy as np
@@ -163,10 +177,9 @@ EOF
 
 **Runner output:**
 ```
-id: pop_bar
-script: /tmp/viz/pop_bar.py
-png: /tmp/viz/pop_bar.png
-success: True
+Plot: pop_bar
+  "Bar chart of members by month with forecast boundary"
+  png: /tmp/viz/pop_bar.png
 ```
 
 **Skill returns to caller:**

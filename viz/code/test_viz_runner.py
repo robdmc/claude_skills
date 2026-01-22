@@ -20,16 +20,34 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-# Import the module under test
+# Import the modules under test
 import viz_runner
+import marimo_handler
+
+# Core viz_runner imports
 from viz_runner import (
     DefaultHandler,
+    VIZ_DIR,
+    ensure_viz_dir,
+    format_module_error,
+    generate_show_code,
+    get_handler,
+    get_python_command,
+    get_unique_id,
+    inject_savefig,
+    run_plot,
+    run_script_background,
+    run_show,
+    validate_python_env,
+)
+
+# Marimo handler imports
+from marimo_handler import (
     MarimoCell,
     MarimoClass,
     MarimoFunction,
     MarimoHandler,
     ParsedNotebook,
-    VIZ_DIR,
     _break_method_chain,
     _indent_code,
     _is_main_block,
@@ -37,22 +55,10 @@ from viz_runner import (
     _parse_class,
     _parse_function,
     assemble_pruned_notebook,
-    ensure_viz_dir,
-    format_module_error,
-    generate_show_code,
-    get_handler,
-    get_python_command,
     get_required_cells,
-    get_unique_id,
-    inject_savefig,
     inject_snapshot,
     parse_marimo_notebook,
-    run_marimo_notebook,
-    run_marimo_show,
-    run_plot,
-    run_script_background,
-    run_show,
-    validate_python_env,
+    prepare_notebook,
 )
 
 
@@ -1046,31 +1052,30 @@ class TestRunScriptBackground:
         assert "Error occurred" in message
 
 
-class TestRunMarimoNotebook:
-    """Tests for run_marimo_notebook."""
+class TestMarimoHandlerIntegration:
+    """Integration tests for MarimoHandler."""
 
     def test_missing_variable(self, sample_notebook_simple, viz_dir_clean):
         """Returns error when target variable not found."""
-        success, message, png_path = run_marimo_notebook(
-            notebook_path=sample_notebook_simple,
-            target_vars=["nonexistent"],
-            plot_code="pass",
-            viz_id="test",
-        )
+        handler = MarimoHandler()
 
-        assert success is False
-        assert "Could not find cells" in message
-        assert png_path is None
+        with pytest.raises(ValueError) as exc_info:
+            handler.build_script(
+                action_code="pass",
+                source_path=sample_notebook_simple,
+                target_var="nonexistent",
+            )
 
+        assert "Could not find cells" in str(exc_info.value)
 
-class TestRunMarimoShow:
-    """Tests for run_marimo_show."""
+    def test_run_show_missing_variable(self, sample_notebook_simple):
+        """run_show returns error when target variable not found via handler."""
+        handler = MarimoHandler()
 
-    def test_missing_variable(self, sample_notebook_simple):
-        """Returns error when target variable not found."""
-        success, output = run_marimo_show(
-            notebook_path=sample_notebook_simple,
-            target_vars=["nonexistent"],
+        success, output = run_show(
+            handler=handler,
+            target_var="nonexistent",
+            source_path=sample_notebook_simple,
         )
 
         assert success is False

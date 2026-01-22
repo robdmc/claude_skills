@@ -29,10 +29,27 @@ The calling agent should provide:
 - **Visualization spec**: What to plot (chart type, axes, title, special features)
 
 ### Data Context (one of these forms)
-- **Database + query**: "Data from `operational_forecast.ddb`, table `forecast`, columns month, members"
+- **Database + query**: "Data from `/full/path/to/operational_forecast.ddb`, table `forecast`, columns month, members"
 - **SQL query**: "Run this SQL: `SELECT * FROM forecast WHERE year >= 2024`"
-- **Code snippet**: "Load data like this: `df = pd.read_parquet('data.parquet')`"
+- **Code snippet**: "Load data like this: `df = pd.read_parquet('/full/path/to/data.parquet')`"
 - **File path**: "CSV at `/tmp/data.csv` with columns X, Y, Z"
+
+**CRITICAL: Absolute Paths Required**
+
+The viz_runner.py executes scripts from `/tmp/viz/`, NOT the caller's working directory. All file paths in generated scripts MUST be absolute paths. The calling agent should:
+1. Determine the absolute path to any data files before invoking the skill
+2. Pass the full absolute path in the data context
+3. Never use relative paths like `./data.ddb` or `data.parquet`
+
+Example - WRONG:
+```python
+con = duckdb.connect('operational_forecast.ddb')  # Will fail!
+```
+
+Example - CORRECT:
+```python
+con = duckdb.connect('/Users/rob/projects/forecast/operational_forecast.ddb')
+```
 
 ### Optional
 - **Suggested ID**: A name hint (e.g., `pop_bar`, `churn_trend`). The runner ensures uniqueness.
@@ -116,7 +133,7 @@ Cleaned 12 files from /tmp/viz
 
 ## Skill Workflow
 
-1. **Infer data loading**: From the provided context, generate Python code to load/create the DataFrame
+1. **Infer data loading**: From the provided context, generate Python code to load/create the DataFrame. **Use absolute paths for all file references** - the script runs from `/tmp/viz/`, not the caller's directory.
 2. **Generate visualization**: Add matplotlib/seaborn code for the requested plot
 3. **Execute via runner** (always include `--desc` with a short summary):
    ```bash
@@ -125,7 +142,7 @@ Cleaned 12 files from /tmp/viz
    EOF
    ```
 4. **Parse output**: Capture the ID and paths from stdout
-5. **Return to caller**: Report final ID and paths
+5. **Return to caller**: Report final ID and paths. Do NOT read the PNG into context unless the user needs analysis.
 
 ## Library Selection
 
@@ -172,8 +189,8 @@ import duckdb
 import matplotlib.pyplot as plt
 import numpy as np
 
-# Load data from DuckDB
-con = duckdb.connect('/path/to/operational_forecast.ddb', read_only=True)
+# Load data from DuckDB (MUST use absolute path!)
+con = duckdb.connect('/Users/rob/projects/forecast/operational_forecast.ddb', read_only=True)
 df = con.execute("""
     SELECT month, total_initial_members, total_final_members
     FROM forecast
@@ -218,7 +235,23 @@ Plot: pop_bar
 > - Script: `/tmp/viz/pop_bar.py`
 > - PNG: `/tmp/viz/pop_bar.png`
 
-The caller can then read the PNG into context for discussion or reference the script for modifications.
+## Important: Do NOT Auto-Read PNGs
+
+**Do NOT automatically read the PNG into context after generating a plot.**
+
+Reading images consumes significant context tokens and is usually unnecessary. The plot window opens automatically via `plt.show()`, so the user can already see the visualization.
+
+**Only read the PNG into context when:**
+- The user explicitly asks you to analyze or interpret the graph
+- The user asks questions about what the graph shows
+- You need to learn something from the visual output to answer a question
+
+**Instead of reading the PNG, offer to open it:**
+```bash
+open /tmp/viz/pop_bar.png  # macOS
+```
+
+This displays the image in the system viewer without consuming context tokens.
 
 ## Refinement Workflow
 
@@ -263,3 +296,102 @@ Regeneration does NOT require `viz_runner.py` - the saved `.py` scripts are self
 ## Interactive Backend Note
 
 Generated scripts use `plt.show()` which works with the `macosx` backend for interactive display. The injected `savefig()` ensures a PNG copy is always saved before display.
+
+## Marimo Notebook Support
+
+The viz skill can extract data from marimo notebooks and generate plots without modifying the original notebook.
+
+### How It Works
+
+1. **Copy notebook** to `/tmp/viz/<id>.py`
+2. **Analyze dependencies** to identify cells needed for target data
+3. **Prune unneeded cells** from the copied notebook
+4. **Inject plotting code** as a new cell at the end
+5. **Execute via subprocess** with `cwd` set to original notebook's directory (so relative paths work)
+
+### CLI Interface
+
+```bash
+python /Users/rob/.claude/skills/viz/viz_runner.py \
+    --marimo \
+    --notebook /path/to/notebook.nb.py \
+    --target-var df_forecast \
+    --id forecast_plot \
+    --desc "Monthly forecast visualization" \
+    << 'EOF'
+# Plotting code that uses df_forecast
+import matplotlib.pyplot as plt
+fig, ax = plt.subplots()
+ax.plot(df_forecast['date'], df_forecast['total_final_members'])
+plt.show()
+EOF
+```
+
+### Parameters
+
+- `--marimo`: Enable marimo notebook mode (required)
+- `--notebook`: Path to the marimo notebook file (required)
+- `--target-var`: Variable to extract from the notebook (required)
+- `--target-line`: Optional line number for capturing intermediate state (for mutated variables)
+- `--id`: Suggested ID for the visualization (optional)
+- `--desc`: Description of the visualization (optional)
+
+### Dependency Analysis
+
+Marimo notebooks encode dependencies explicitly:
+- Cell parameters = variables the cell **reads** (refs)
+- Cell return tuple = variables the cell **defines** (defs)
+
+The skill walks backwards from the target variable through the dependency graph to find all required cells.
+
+### Target Line (Advanced)
+
+When a variable is mutated within a cell, use `--target-line` to capture intermediate state:
+
+```python
+@app.cell
+def _(raw_data):
+    df = raw_data.copy()           # line 45
+    df = df[df['value'] > 0]       # line 46 - filtered
+    df = df.groupby('cat').sum()   # line 47 - aggregated
+    return (df,)
+```
+
+Use `--target-var df --target-line 46` to capture `df` after filtering but before aggregation.
+
+### Example Workflow
+
+**User request:**
+> "Plot the member forecast over time from the operational forecast notebook"
+
+**Agent workflow:**
+1. Read the notebook to identify candidate variables
+2. Ask clarifying questions if multiple candidates exist
+3. Execute:
+
+```bash
+python /Users/rob/.claude/skills/viz/viz_runner.py \
+    --marimo \
+    --notebook /Users/rob/repos/project/forecast.nb.py \
+    --target-var df_deliverable \
+    --id member_forecast \
+    --desc "Historical and forecast members" \
+    << 'EOF'
+import matplotlib.pyplot as plt
+
+fig, ax = plt.subplots(figsize=(12, 6))
+ax.plot(df_deliverable['date'], df_deliverable['total_final_members'])
+ax.set_xlabel('Date')
+ax.set_ylabel('Members')
+ax.set_title('Member Population Over Time')
+plt.tight_layout()
+plt.show()
+EOF
+```
+
+### Important Notes
+
+- The **original notebook is never modified** (read-only access)
+- All work happens on a copy in `/tmp/viz/`
+- The script runs with the notebook's directory as cwd, so relative file paths work
+- Uses `uv run python` if the notebook directory contains `pyproject.toml` or `uv.lock`

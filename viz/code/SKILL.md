@@ -84,6 +84,36 @@ The caller can then:
 - Reference the script for modifications
 - Look up plots by ID or description via the JSON metadata
 
+### List
+
+To see all available visualizations:
+
+```bash
+python /Users/rob/.claude/skills/viz/viz_runner.py --list
+```
+
+Output:
+```
+ID              Description                          Created
+--------------  -----------------------------------  ----------------
+pop_bar         Bar chart of members by month        2025-01-22 11:31
+churn_trend     Monthly churn rate                   2025-01-22 10:45
+test_scatter    -                                    2025-01-22 09:20
+```
+
+### Cleanup
+
+To remove all visualization files from `/tmp/viz/`:
+
+```bash
+python /Users/rob/.claude/skills/viz/viz_runner.py --clean
+```
+
+Output:
+```
+Cleaned 12 files from /tmp/viz
+```
+
 ## Skill Workflow
 
 1. **Infer data loading**: From the provided context, generate Python code to load/create the DataFrame

@@ -136,7 +136,50 @@ def main():
     parser.add_argument("--id", dest="suggested_id", help="Suggested ID for the visualization")
     parser.add_argument("--desc", dest="description", help="Description of the visualization")
     parser.add_argument("--file", dest="script_file", help="Path to script file (alternative to stdin)")
+    parser.add_argument("--clean", action="store_true", help="Remove all files from /tmp/viz/")
+    parser.add_argument("--list", action="store_true", help="List all visualizations")
     args = parser.parse_args()
+
+    # Handle clean action early
+    if args.clean:
+        ensure_viz_dir()
+        count = 0
+        for f in VIZ_DIR.iterdir():
+            if f.is_file():
+                f.unlink()
+                count += 1
+        print(f"Cleaned {count} files from {VIZ_DIR}")
+        sys.exit(0)
+
+    # Handle list action
+    if args.list:
+        ensure_viz_dir()
+        json_files = sorted(VIZ_DIR.glob("*.json"), key=lambda f: f.stat().st_mtime, reverse=True)
+        if not json_files:
+            print("No visualizations found")
+            sys.exit(0)
+
+        # Collect metadata
+        rows = []
+        for jf in json_files:
+            meta = json.loads(jf.read_text())
+            rows.append({
+                "id": meta.get("id", jf.stem),
+                "desc": meta.get("desc") or "-",
+                "created": meta.get("created", "")[:16].replace("T", " "),
+            })
+
+        # Calculate column widths
+        id_width = max(len("ID"), max(len(r["id"]) for r in rows))
+        desc_width = max(len("Description"), max(len(r["desc"]) for r in rows))
+
+        # Print table
+        header = f"{'ID':<{id_width}}  {'Description':<{desc_width}}  Created"
+        print(header)
+        print(f"{'-' * id_width}  {'-' * desc_width}  {'-' * 16}")
+        for r in rows:
+            print(f"{r['id']:<{id_width}}  {r['desc']:<{desc_width}}  {r['created']}")
+        sys.exit(0)
 
     # Ensure output directory exists
     ensure_viz_dir()

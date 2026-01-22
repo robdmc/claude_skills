@@ -18,9 +18,7 @@ The runner:
 
 import argparse
 import json
-import os
 import re
-import shlex
 import subprocess
 import sys
 import time
@@ -202,36 +200,41 @@ def run_plot(
     script_content = inject_savefig(script_content, str(png_path))
     script_path.write_text(script_content)
 
-    # Execute
-    python_cmd = get_python_command(cwd)
-
-    process = subprocess.Popen(
-        [*python_cmd, str(script_path)],
-        cwd=cwd,
-        start_new_session=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-    )
-
-    # Poll for PNG (longer timeout for notebooks with DB queries)
+    # Execute with fallback chain - retry on module errors
+    fallback_chain = get_python_fallback_chain(cwd)
     max_wait = 30.0 if source_path else 3.0
-    result = poll_for_file(
-        process, png_path, python_cmd, max_wait=max_wait, poll_interval=0.2
-    )
+    result = None
 
-    if result.success:
-        VizMetadata(
-            viz_id=viz_id,
-            description=description,
-            png_path=png_path,
-            script_path=script_path,
-            pid=result.process.pid,
-            source_notebook=source_path if isinstance(handler, MarimoHandler) else None,
-            target_vars=[target_var] if target_var else None,
-        ).write()
-        return True, "Plot generated successfully", png_path
+    for python_cmd in fallback_chain:
+        process = subprocess.Popen(
+            [*python_cmd, str(script_path)],
+            cwd=cwd,
+            start_new_session=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+        )
 
-    return False, result.message, None
+        result = poll_for_file(
+            process, png_path, python_cmd, max_wait=max_wait, poll_interval=0.2
+        )
+
+        if result.success:
+            VizMetadata(
+                viz_id=viz_id,
+                description=description,
+                png_path=png_path,
+                script_path=script_path,
+                pid=result.process.pid,
+                source_notebook=source_path if isinstance(handler, MarimoHandler) else None,
+                target_vars=[target_var] if target_var else None,
+            ).write()
+            return True, "Plot generated successfully", png_path
+
+        # If not a module error, don't try next environment
+        if "MISSING MODULE" not in result.message:
+            break
+
+    return False, result.message if result else "No Python environments available", None
 
 
 def generate_show_code(target_var: str, num_rows: int = 5) -> str:
@@ -302,36 +305,44 @@ def run_show(
     script_path = VIZ_DIR / "_show_temp.py"
     script_path.write_text(script_content)
 
-    try:
-        # Execute synchronously and capture output
-        python_cmd = get_python_command(cwd)
+    # Execute with fallback chain - retry on module errors
+    fallback_chain = get_python_fallback_chain(cwd)
+    last_error = "No Python environments available"
 
-        result = subprocess.run(
-            [*python_cmd, str(script_path)],
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
+    for python_cmd in fallback_chain:
+        try:
+            result = subprocess.run(
+                [*python_cmd, str(script_path)],
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
 
-        # Clean up temp file
-        script_path.unlink(missing_ok=True)
+            if result.returncode == 0:
+                script_path.unlink(missing_ok=True)
+                return True, result.stdout
 
-        if result.returncode != 0:
-            # Check for module errors
+            # Check for module errors - try next env if so
             module_error = format_module_error(result.stderr, python_cmd)
             if module_error:
-                return False, module_error
+                last_error = module_error
+                continue  # Try next environment
+
+            # Non-module error, stop here
+            script_path.unlink(missing_ok=True)
             return False, f"Script failed:\n{result.stderr}"
 
-        return True, result.stdout
+        except subprocess.TimeoutExpired:
+            script_path.unlink(missing_ok=True)
+            return False, "Timeout executing script"
+        except Exception as e:
+            script_path.unlink(missing_ok=True)
+            return False, f"Error: {e}"
 
-    except subprocess.TimeoutExpired:
-        script_path.unlink(missing_ok=True)
-        return False, "Timeout executing script"
-    except Exception as e:
-        script_path.unlink(missing_ok=True)
-        return False, f"Error: {e}"
+    # All environments failed with module errors
+    script_path.unlink(missing_ok=True)
+    return False, last_error
 
 
 # ============================================================================
@@ -356,37 +367,48 @@ def validate_python_env(python_cmd: list[str], required_module: str = "matplotli
         return False
 
 
-def get_python_command(cwd: Path | None = None) -> list[str]:
+def get_python_fallback_chain(cwd: Path | None = None) -> list[list[str]]:
     """
-    Determine Python command with fallback chain and import validation.
+    Return ordered list of Python commands to try.
 
     Priority:
-    1. VIZ_PYTHON_CMD env var (explicit override, no validation)
-    2. Project environment (cwd with uv markers) - validated
-    3. System Python on PATH - validated
-    4. Viz skill's own environment - guaranteed fallback
-    """
-    # Explicit override - trust the user
-    env_cmd = os.environ.get("VIZ_PYTHON_CMD")
-    if env_cmd:
-        return shlex.split(env_cmd)
+    1. Project environment (cwd with uv markers)
+    2. System Python on PATH
+    3. Viz skill's own environment (guaranteed fallback)
 
-    # Try project's environment first
+    Returns list of commands to try in order. Each is tried until one succeeds.
+    On module errors, the next environment in the chain is attempted.
+    """
+    chain = []
+
+    # Project's environment
     if cwd is not None:
         uv_markers = [cwd / "pyproject.toml", cwd / "uv.lock"]
         if any(marker.exists() for marker in uv_markers):
             project_cmd = ["uv", "run", "--directory", str(cwd), "python"]
             if validate_python_env(project_cmd):
-                return project_cmd
+                chain.append(project_cmd)
 
-    # Try system Python on PATH
+    # System Python on PATH
     system_cmd = ["python"]
     if validate_python_env(system_cmd):
-        return system_cmd
+        chain.append(system_cmd)
 
-    # Fall back to viz skill's own environment (guaranteed deps)
+    # Viz skill's own environment (guaranteed deps)
     viz_skill_dir = Path(__file__).parent
-    return ["uv", "run", "--directory", str(viz_skill_dir), "python"]
+    chain.append(["uv", "run", "--directory", str(viz_skill_dir), "python"])
+
+    return chain
+
+
+def get_python_command(cwd: Path | None = None) -> list[str]:
+    """
+    Get the first Python command from the fallback chain.
+
+    For backwards compatibility. Use get_python_fallback_chain() for retry logic.
+    """
+    chain = get_python_fallback_chain(cwd)
+    return chain[0] if chain else ["python"]
 
 
 # ============================================================================

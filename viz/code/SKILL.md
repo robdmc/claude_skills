@@ -54,6 +54,39 @@ con = duckdb.connect('/Users/rob/projects/forecast/operational_forecast.ddb')
 ### Optional
 - **Suggested ID**: A name hint (e.g., `pop_bar`, `churn_trend`). The runner ensures uniqueness.
 
+## Intent Detection
+
+**Before generating any code, analyze the user's request to determine the appropriate mode.**
+
+### Inspection Mode (use `--show`)
+Use when the user wants to **see the data itself**, not a visualization:
+- "Show me the dataframe"
+- "Display the first N rows"
+- "What does the data look like?"
+- "Print the data"
+- "What columns are in X?"
+- "Inspect the data"
+- "Let me see the data"
+
+**Action:** Use `--show` flag. Do NOT generate plot code.
+
+### Visualization Mode (generate plot)
+Use when the user wants a **chart, graph, or visual representation**:
+- "Plot the data"
+- "Create a chart of..."
+- "Visualize the trend"
+- "Show a graph of..."
+- "Bar chart showing..."
+- "Scatter plot of..."
+
+**Action:** Generate matplotlib/seaborn code and pass via stdin.
+
+### Ambiguous Requests
+If unclear (e.g., "show me X over time"), **default to asking** or interpret based on context:
+- If the request mentions chart types (bar, line, scatter) → visualization
+- If the request is about structure/columns/rows → inspection
+- When in doubt, use `--show` first (it's cheaper), then offer to plot
+
 ## Artifact Management
 
 All artifacts are managed in `/tmp/viz/` via the helper script.
@@ -335,6 +368,8 @@ EOF
 - `--target-line`: Optional line number for capturing intermediate state (for mutated variables)
 - `--id`: Suggested ID for the visualization (optional)
 - `--desc`: Description of the visualization (optional)
+- `--show`: Show mode - print dataframe info to console instead of plotting (no stdin required)
+- `--rows`: Number of rows to display in show mode (default: 5)
 
 ### Dependency Analysis
 
@@ -358,6 +393,40 @@ def _(raw_data):
 ```
 
 Use `--target-var df --target-line 46` to capture `df` after filtering but before aggregation.
+
+### Show Mode (Data Inspection)
+
+Use `--show` to print dataframe info to console instead of generating a plot. Useful for quickly inspecting data at a specific point in the notebook pipeline.
+
+```bash
+python /Users/rob/.claude/skills/viz/viz_runner.py \
+    --marimo \
+    --notebook /path/to/notebook.nb.py \
+    --target-var df \
+    --show \
+    --rows 10
+```
+
+Output:
+```
+Shape: (12345, 5)
+Columns: ['date', 'profile_id', 'kind', 'state', 'channel_type']
+
+Dtypes:
+date              datetime64[ns]
+profile_id                 int64
+kind                      object
+state                     object
+channel_type              object
+
+First 10 rows:
+        date  profile_id     kind state channel_type
+0 2021-01-01      123456  monthly    CA      organic
+1 2021-01-02      123457  monthly    TX         paid
+...
+```
+
+No stdin (plot code) is required for show mode - it only prints dataframe metadata and contents.
 
 ### Example Workflow
 

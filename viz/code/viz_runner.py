@@ -28,6 +28,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import Protocol
 
 VIZ_DIR = Path("/tmp/viz")
 
@@ -79,6 +80,386 @@ class ParsedNotebook:
     classes: list[MarimoClass] = field(default_factory=list)
     cells: list[MarimoCell] = field(default_factory=list)
     main_block: str = ""  # The if __name__ == "__main__" block
+
+
+@dataclass
+class VizMetadata:
+    """Metadata for a visualization artifact."""
+
+    viz_id: str
+    description: str | None
+    png_path: Path
+    script_path: Path
+    pid: int
+    source_notebook: Path | None = None
+    target_vars: list[str] | None = None
+
+    def to_dict(self) -> dict:
+        """Convert to dictionary for JSON serialization."""
+        data = {
+            "id": self.viz_id,
+            "desc": self.description,
+            "png": str(self.png_path),
+            "script": str(self.script_path),
+            "created": datetime.now().isoformat(timespec="seconds"),
+            "pid": self.pid,
+        }
+        if self.source_notebook:
+            data["source_notebook"] = str(self.source_notebook)
+        if self.target_vars:
+            data["target_vars"] = self.target_vars
+        return data
+
+    def write(self, viz_dir: Path = VIZ_DIR) -> Path:
+        """Write metadata to JSON file."""
+        json_path = viz_dir / f"{self.viz_id}.json"
+        json_path.write_text(json.dumps(self.to_dict(), indent=2))
+        return json_path
+
+
+@dataclass
+class PreparedNotebook:
+    """Result of parsing and preparing a marimo notebook for execution."""
+
+    parsed: ParsedNotebook
+    required_indices: list[int]
+    required_functions: set[str]
+    target_var: str | None
+    cwd: Path
+
+
+# ============================================================================
+# Source Handler Architecture
+# ============================================================================
+
+
+class SourceHandler(Protocol):
+    """Interface for handlers that know how to build scripts from different source types."""
+
+    def build_script(
+        self,
+        action_code: str,
+        source_path: Path | None = None,
+        target_var: str | None = None,
+        **kwargs,
+    ) -> tuple[str, Path | None]:
+        """
+        Build an executable Python script that prepares data and runs action_code.
+
+        The action_code could be plotting code, show/inspection code, or any other
+        code that operates on the target variable.
+
+        Args:
+            action_code: Code to execute (plotting, showing, etc.)
+            source_path: Optional path to source file (notebook, SQL file, etc.)
+            target_var: Optional variable name to extract from source
+            **kwargs: Handler-specific options
+
+        Returns:
+            (script_content, working_directory)
+            - script_content: Complete Python script ready to execute
+            - working_directory: Directory to run script from (or None for cwd)
+        """
+        ...
+
+    def validate_args(self, args: argparse.Namespace) -> tuple[bool, str]:
+        """
+        Validate that required arguments are present.
+
+        Returns:
+            (valid, error_message)
+        """
+        ...
+
+
+class DefaultHandler:
+    """Default handler - action_code is the complete script."""
+
+    def build_script(
+        self,
+        action_code: str,
+        source_path: Path | None = None,
+        target_var: str | None = None,
+        **kwargs,
+    ) -> tuple[str, Path | None]:
+        """For default handler, action_code IS the complete script."""
+        return action_code, None
+
+    def validate_args(self, args: argparse.Namespace) -> tuple[bool, str]:
+        """Default handler has no special requirements."""
+        return True, ""
+
+
+class MarimoHandler:
+    """Handler for marimo notebooks - parses and assembles pruned scripts."""
+
+    def build_script(
+        self,
+        action_code: str,
+        source_path: Path | None = None,
+        target_var: str | None = None,
+        target_line: int | None = None,
+        **kwargs,
+    ) -> tuple[str, Path | None]:
+        """
+        Build a script by parsing marimo notebook and resolving dependencies.
+
+        Args:
+            action_code: Code to execute (plotting, showing, etc.)
+            source_path: Path to the marimo notebook
+            target_var: Variable to extract from the notebook
+            target_line: Optional line number for intermediate state capture
+
+        Returns:
+            (script_content, working_directory)
+
+        Raises:
+            ValueError: If notebook parsing fails or target variable not found
+        """
+        if source_path is None:
+            raise ValueError("MarimoHandler requires source_path (notebook path)")
+        if target_var is None:
+            raise ValueError("MarimoHandler requires target_var")
+
+        prep = prepare_notebook(source_path, [target_var])
+        if isinstance(prep, tuple):
+            raise ValueError(prep[1])
+
+        script = assemble_pruned_notebook(
+            prep.parsed,
+            prep.required_indices,
+            prep.required_functions,
+            action_code,
+            target_var=prep.target_var,
+            target_line=target_line,
+        )
+        return script, prep.cwd
+
+    def validate_args(self, args: argparse.Namespace) -> tuple[bool, str]:
+        """Validate marimo-specific arguments."""
+        if not getattr(args, "notebook_path", None):
+            return False, "--marimo requires --notebook path"
+        if not getattr(args, "target_var", None):
+            return False, "--marimo requires --target-var"
+        if not Path(args.notebook_path).exists():
+            return False, f"Notebook not found: {args.notebook_path}"
+        return True, ""
+
+
+# Handler registry
+HANDLERS: dict[str, type[SourceHandler]] = {
+    "default": DefaultHandler,
+    "marimo": MarimoHandler,
+}
+
+
+def get_handler(args: argparse.Namespace) -> SourceHandler:
+    """Select handler based on CLI args."""
+    if getattr(args, "marimo", False):
+        return MarimoHandler()
+    # Future: elif args.sql: return SQLHandler()
+    return DefaultHandler()
+
+
+def run_plot(
+    handler: SourceHandler,
+    plot_code: str,
+    viz_id: str,
+    description: str | None = None,
+    source_path: Path | None = None,
+    target_var: str | None = None,
+    **handler_kwargs,
+) -> tuple[bool, str, Path | None]:
+    """
+    Core plotting function - uses handler to build script, then executes.
+
+    Args:
+        handler: The SourceHandler to use for building the script
+        plot_code: The plotting code (or complete script for DefaultHandler)
+        viz_id: ID for the visualization
+        description: Optional description
+        source_path: Optional source file (for MarimoHandler, etc.)
+        target_var: Optional target variable (for MarimoHandler, etc.)
+        **handler_kwargs: Additional handler-specific options
+
+    Returns:
+        (success, message, png_path)
+    """
+    ensure_viz_dir()
+
+    # Build the script using the handler
+    try:
+        script_content, cwd = handler.build_script(
+            plot_code,
+            source_path=source_path,
+            target_var=target_var,
+            **handler_kwargs,
+        )
+    except ValueError as e:
+        return False, str(e), None
+
+    # Determine paths
+    script_path = VIZ_DIR / f"{viz_id}.py"
+    png_path = VIZ_DIR / f"{viz_id}.png"
+
+    # Inject savefig
+    script_content = inject_savefig(script_content, str(png_path))
+    script_path.write_text(script_content)
+
+    # Execute
+    python_cmd = get_python_command(cwd)
+
+    process = subprocess.Popen(
+        [*python_cmd, str(script_path)],
+        cwd=cwd,
+        start_new_session=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+    )
+
+    # Poll for PNG (longer timeout for notebooks with DB queries)
+    max_wait = 30.0 if source_path else 3.0
+    result = poll_for_file(
+        process, png_path, python_cmd, max_wait=max_wait, poll_interval=0.2
+    )
+
+    if result.success:
+        VizMetadata(
+            viz_id=viz_id,
+            description=description,
+            png_path=png_path,
+            script_path=script_path,
+            pid=result.process.pid,
+            source_notebook=source_path if isinstance(handler, MarimoHandler) else None,
+            target_vars=[target_var] if target_var else None,
+        ).write()
+        return True, "Plot generated successfully", png_path
+
+    return False, result.message, None
+
+
+def generate_show_code(target_var: str, num_rows: int = 5) -> str:
+    """
+    Generate code to display dataframe info to stdout.
+
+    Args:
+        target_var: Name of the variable to inspect
+        num_rows: Number of rows to display
+
+    Returns:
+        Python code string that prints dataframe info
+    """
+    return f'''
+_var = {target_var}
+print(f"Shape: {{_var.shape}}")
+print(f"Columns: {{list(_var.columns)}}")
+print(f"\\nDtypes:")
+print(_var.dtypes.to_string())
+print(f"\\nFirst {num_rows} rows:")
+if hasattr(_var, 'to_string'):
+    print(_var.head({num_rows}).to_string())
+else:
+    print(_var.head({num_rows}))
+'''
+
+
+def run_show(
+    handler: SourceHandler,
+    target_var: str,
+    source_path: Path | None = None,
+    num_rows: int = 5,
+    **handler_kwargs,
+) -> tuple[bool, str]:
+    """
+    Execute a script to show/inspect data and capture output.
+
+    Unlike run_plot() which backgrounds and polls for a PNG, this runs
+    synchronously and captures stdout.
+
+    Args:
+        handler: The SourceHandler to use for building the script
+        target_var: Variable to inspect
+        source_path: Optional source file (for MarimoHandler, etc.)
+        num_rows: Number of rows to display
+        **handler_kwargs: Additional handler-specific options
+
+    Returns:
+        (success, output_or_error)
+    """
+    ensure_viz_dir()
+
+    # Generate the show code
+    show_code = generate_show_code(target_var, num_rows)
+
+    # Build the script using the handler
+    try:
+        script_content, cwd = handler.build_script(
+            show_code,
+            source_path=source_path,
+            target_var=target_var,
+            **handler_kwargs,
+        )
+    except ValueError as e:
+        return False, str(e)
+
+    # Write to temp location
+    script_path = VIZ_DIR / "_show_temp.py"
+    script_path.write_text(script_content)
+
+    try:
+        # Execute synchronously and capture output
+        python_cmd = get_python_command(cwd)
+
+        result = subprocess.run(
+            [*python_cmd, str(script_path)],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+
+        # Clean up temp file
+        script_path.unlink(missing_ok=True)
+
+        if result.returncode != 0:
+            # Check for module errors
+            module_error = format_module_error(result.stderr, python_cmd)
+            if module_error:
+                return False, module_error
+            return False, f"Script failed:\n{result.stderr}"
+
+        return True, result.stdout
+
+    except subprocess.TimeoutExpired:
+        script_path.unlink(missing_ok=True)
+        return False, "Timeout executing script"
+    except Exception as e:
+        script_path.unlink(missing_ok=True)
+        return False, f"Error: {e}"
+
+
+def prepare_notebook(
+    notebook_path: Path,
+    target_vars: list[str],
+) -> PreparedNotebook | tuple[bool, str]:
+    """
+    Parse notebook and resolve dependencies.
+
+    Returns PreparedNotebook on success, or (False, error_message) on failure.
+    """
+    parsed = parse_marimo_notebook(notebook_path)
+    required_indices, required_functions = get_required_cells(parsed, target_vars)
+
+    if not required_indices:
+        return (False, f"Could not find cells defining: {target_vars}")
+
+    return PreparedNotebook(
+        parsed=parsed,
+        required_indices=required_indices,
+        required_functions=required_functions,
+        target_var=target_vars[0] if target_vars else None,
+        cwd=notebook_path.parent,
+    )
 
 
 def parse_marimo_notebook(notebook_path: Path) -> ParsedNotebook:
@@ -166,13 +547,27 @@ def parse_marimo_notebook(notebook_path: Path) -> ParsedNotebook:
     return result
 
 
+def _extract_node_source(
+    node: ast.FunctionDef | ast.ClassDef, source_lines: list[str]
+) -> tuple[str, int, int]:
+    """
+    Extract source code for an AST node, accounting for decorators.
+
+    Returns: (code, start_line, end_line)
+    """
+    start_line = node.lineno
+    if hasattr(node, "decorator_list"):
+        for decorator in node.decorator_list:
+            start_line = min(start_line, decorator.lineno)
+    end_line = node.end_lineno or node.lineno
+    code = "".join(source_lines[start_line - 1 : end_line])
+    return code, start_line, end_line
+
+
 def _parse_cell(node: ast.FunctionDef, source_lines: list[str]) -> MarimoCell:
     """Parse an @app.cell decorated function into a MarimoCell."""
     # Get refs from function parameters
-    refs = []
-    for arg in node.args.args:
-        if arg.arg != "_":  # Skip underscore params
-            refs.append(arg.arg)
+    refs = [arg.arg for arg in node.args.args if arg.arg != "_"]
 
     # Get defs from return statement
     defs = []
@@ -183,14 +578,7 @@ def _parse_cell(node: ast.FunctionDef, source_lines: list[str]) -> MarimoCell:
                     if isinstance(elt, ast.Name):
                         defs.append(elt.id)
 
-    # Extract full code
-    start_line = node.lineno
-    # Account for decorators
-    for decorator in node.decorator_list:
-        start_line = min(start_line, decorator.lineno)
-    end_line = node.end_lineno or node.lineno
-
-    code = "".join(source_lines[start_line - 1 : end_line])
+    code, start_line, end_line = _extract_node_source(node, source_lines)
 
     return MarimoCell(
         name=node.name,
@@ -204,13 +592,7 @@ def _parse_cell(node: ast.FunctionDef, source_lines: list[str]) -> MarimoCell:
 
 def _parse_function(node: ast.FunctionDef, source_lines: list[str]) -> MarimoFunction:
     """Parse an @app.function decorated function."""
-    start_line = node.lineno
-    for decorator in node.decorator_list:
-        start_line = min(start_line, decorator.lineno)
-    end_line = node.end_lineno or node.lineno
-
-    code = "".join(source_lines[start_line - 1 : end_line])
-
+    code, start_line, end_line = _extract_node_source(node, source_lines)
     return MarimoFunction(
         name=node.name, code=code, start_line=start_line, end_line=end_line
     )
@@ -218,13 +600,7 @@ def _parse_function(node: ast.FunctionDef, source_lines: list[str]) -> MarimoFun
 
 def _parse_class(node: ast.ClassDef, source_lines: list[str]) -> MarimoClass:
     """Parse a class definition."""
-    start_line = node.lineno
-    for decorator in node.decorator_list:
-        start_line = min(start_line, decorator.lineno)
-    end_line = node.end_lineno or node.lineno
-
-    code = "".join(source_lines[start_line - 1 : end_line])
-
+    code, start_line, end_line = _extract_node_source(node, source_lines)
     return MarimoClass(
         name=node.name, code=code, start_line=start_line, end_line=end_line
     )
@@ -518,12 +894,12 @@ def _indent_code(code: str, indent: str) -> str:
     return "".join(indented)
 
 
-def get_python_command(cwd: Path) -> list[str]:
+def get_python_command(cwd: Path | None = None) -> list[str]:
     """
     Determine Python command based on environment.
 
     1. If VIZ_PYTHON_CMD env var is set, use that
-    2. If cwd has a uv project (pyproject.toml or uv.lock), use 'uv run python'
+    2. If cwd provided and has a uv project (pyproject.toml or uv.lock), use 'uv run python'
     3. Otherwise use sys.executable (the Python running viz_runner.py)
     """
     # Check env var first
@@ -531,10 +907,11 @@ def get_python_command(cwd: Path) -> list[str]:
     if env_cmd:
         return shlex.split(env_cmd)
 
-    # Check for uv project markers
-    uv_markers = [cwd / "pyproject.toml", cwd / "uv.lock"]
-    if any(marker.exists() for marker in uv_markers):
-        return ["uv", "run", "python"]
+    # Check for uv project markers if cwd provided
+    if cwd is not None:
+        uv_markers = [cwd / "pyproject.toml", cwd / "uv.lock"]
+        if any(marker.exists() for marker in uv_markers):
+            return ["uv", "run", "python"]
 
     return [sys.executable]
 
@@ -564,23 +941,18 @@ def run_marimo_notebook(
     ensure_viz_dir()
 
     try:
-        # Parse the notebook
-        parsed = parse_marimo_notebook(notebook_path)
-
-        # Get required cells
-        required_indices, required_functions = get_required_cells(parsed, target_vars)
-
-        if not required_indices:
-            return False, f"Could not find cells defining: {target_vars}", None
+        # Prepare the notebook
+        prep = prepare_notebook(notebook_path, target_vars)
+        if isinstance(prep, tuple):
+            return prep[0], prep[1], None
 
         # Assemble pruned notebook
-        target_var = target_vars[0] if target_vars else None
         pruned_code = assemble_pruned_notebook(
-            parsed,
-            required_indices,
-            required_functions,
+            prep.parsed,
+            prep.required_indices,
+            prep.required_functions,
             plot_code,
-            target_var=target_var,
+            target_var=prep.target_var,
             target_line=target_line,
         )
 
@@ -594,54 +966,119 @@ def run_marimo_notebook(
         script_path.write_text(pruned_code)
 
         # Execute with cwd set to original notebook's directory
-        cwd = notebook_path.parent
-        python_cmd = get_python_command(cwd)
+        python_cmd = get_python_command(prep.cwd)
 
         process = subprocess.Popen(
             [*python_cmd, str(script_path)],
-            cwd=cwd,  # Critical: run from notebook's directory
+            cwd=prep.cwd,  # Critical: run from notebook's directory
             start_new_session=True,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
         )
 
-        # Poll for PNG
-        max_wait = 30.0  # Longer timeout for notebooks with DB queries
-        poll_interval = 0.2
-        waited = 0.0
+        # Poll for PNG (longer timeout for notebooks with DB queries)
+        result = poll_for_file(
+            process, png_path, python_cmd,
+            max_wait=30.0, poll_interval=0.2
+        )
 
-        while waited < max_wait:
-            if png_path.exists():
-                # Write metadata
-                json_path = VIZ_DIR / f"{viz_id}.json"
-                metadata = {
-                    "id": viz_id,
-                    "desc": description,
-                    "png": str(png_path),
-                    "script": str(script_path),
-                    "source_notebook": str(notebook_path),
-                    "target_vars": target_vars,
-                    "created": datetime.now().isoformat(timespec="seconds"),
-                    "pid": process.pid,
-                }
-                json_path.write_text(json.dumps(metadata, indent=2))
-                return True, "Plot generated successfully", png_path
+        if result.success:
+            VizMetadata(
+                viz_id=viz_id,
+                description=description,
+                png_path=png_path,
+                script_path=script_path,
+                pid=result.process.pid,
+                source_notebook=notebook_path,
+                target_vars=target_vars,
+            ).write()
+            return True, "Plot generated successfully", png_path
 
-            time.sleep(poll_interval)
-            waited += poll_interval
-
-            # Check if process failed
-            if process.poll() is not None:
-                stderr = process.stderr.read().decode() if process.stderr else ""
-                module_error = format_module_error(stderr, python_cmd)
-                if module_error:
-                    return False, module_error, None
-                return False, f"Script failed: {stderr}", None
-
-        return False, "Timeout waiting for plot (script may still be running)", None
+        return False, result.message, None
 
     except Exception as e:
         return False, f"Error: {e}", None
+
+
+def run_marimo_show(
+    notebook_path: Path,
+    target_vars: list[str],
+    num_rows: int = 5,
+) -> tuple[bool, str]:
+    """
+    Execute a marimo notebook and print dataframe info to console.
+
+    Args:
+        notebook_path: Path to the original marimo notebook
+        target_vars: Variables to extract from the notebook
+        num_rows: Number of rows to display (default: 5)
+
+    Returns:
+        (success, output_or_error)
+    """
+    try:
+        # Prepare the notebook
+        prep = prepare_notebook(notebook_path, target_vars)
+        if isinstance(prep, tuple):
+            return prep
+
+        # Generate show code instead of plot code
+        # Don't import pandas - it's typically already in the setup block
+        show_code = f'''
+_var = {prep.target_var}
+print(f"Shape: {{_var.shape}}")
+print(f"Columns: {{list(_var.columns)}}")
+print(f"\\nDtypes:")
+print(_var.dtypes.to_string())
+print(f"\\nFirst {num_rows} rows:")
+if hasattr(_var, 'to_string'):
+    print(_var.head({num_rows}).to_string())
+else:
+    print(_var.head({num_rows}))
+'''
+
+        # Assemble pruned notebook with show code
+        pruned_code = assemble_pruned_notebook(
+            prep.parsed,
+            prep.required_indices,
+            prep.required_functions,
+            show_code,
+            target_var=prep.target_var,
+            target_line=None,
+        )
+
+        # Write to temp location
+        script_path = VIZ_DIR / f"_show_temp.py"
+        ensure_viz_dir()
+        script_path.write_text(pruned_code)
+
+        # Execute with cwd set to original notebook's directory
+        python_cmd = get_python_command(prep.cwd)
+
+        result = subprocess.run(
+            [*python_cmd, str(script_path)],
+            cwd=prep.cwd,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+
+        # Clean up temp file
+        script_path.unlink(missing_ok=True)
+
+        if result.returncode != 0:
+            # Check for module errors
+            module_error = format_module_error(result.stderr, python_cmd)
+            if module_error:
+                return False, module_error
+            return False, f"Script failed:\n{result.stderr}"
+
+        return True, result.stdout
+
+    except subprocess.TimeoutExpired:
+        return False, "Timeout executing notebook"
+    except Exception as e:
+        return False, f"Error: {e}"
 
 
 def ensure_viz_dir():
@@ -705,6 +1142,51 @@ def inject_savefig(script: str, png_path: str) -> str:
     return modified
 
 
+@dataclass
+class PollResult:
+    """Result from polling a subprocess for file creation."""
+
+    success: bool
+    message: str
+    process: subprocess.Popen
+
+
+def poll_for_file(
+    process: subprocess.Popen,
+    target_file: Path,
+    python_cmd: list[str],
+    max_wait: float = 3.0,
+    poll_interval: float = 0.1,
+) -> PollResult:
+    """
+    Poll a subprocess, waiting for a target file to be created.
+
+    Returns early if:
+    - Target file appears (success)
+    - Process exits with error (failure)
+    - Timeout reached (failure, but process may still be running)
+    """
+    waited = 0.0
+    while waited < max_wait:
+        if target_file.exists():
+            return PollResult(success=True, message="File created", process=process)
+
+        time.sleep(poll_interval)
+        waited += poll_interval
+
+        if process.poll() is not None:
+            stderr = process.stderr.read().decode() if process.stderr else ""
+            module_error = format_module_error(stderr, python_cmd)
+            error_msg = module_error or f"Script failed: {stderr}"
+            return PollResult(success=False, message=error_msg, process=process)
+
+    return PollResult(
+        success=False,
+        message="Timeout waiting for file (process may still be running)",
+        process=process,
+    )
+
+
 def format_module_error(stderr: str, python_cmd: list[str]) -> str | None:
     """
     Detect ModuleNotFoundError and return a clear, actionable error message.
@@ -735,14 +1217,6 @@ def format_module_error(stderr: str, python_cmd: list[str]) -> str | None:
     return None
 
 
-def get_python_cmd() -> list[str]:
-    """Get the Python command to use for running scripts."""
-    cmd = os.environ.get("VIZ_PYTHON_CMD")
-    if cmd:
-        return shlex.split(cmd)
-    return [sys.executable]
-
-
 def run_script_background(script_path: Path, png_path: Path) -> tuple[bool, int, str]:
     """
     Execute the script in background and wait for PNG to be created.
@@ -753,7 +1227,7 @@ def run_script_background(script_path: Path, png_path: Path) -> tuple[bool, int,
     immediately while the interactive window stays open.
     """
     try:
-        python_cmd = get_python_cmd()
+        python_cmd = get_python_command()
 
         # Start script as detached background process
         # Use caller's cwd (not VIZ_DIR) so uv can find pyproject.toml
@@ -765,30 +1239,139 @@ def run_script_background(script_path: Path, png_path: Path) -> tuple[bool, int,
         )
 
         # Poll for PNG (savefig happens before plt.show)
-        max_wait = 3.0
-        poll_interval = 0.1
-        waited = 0.0
+        result = poll_for_file(process, png_path, python_cmd)
 
-        while waited < max_wait:
-            if png_path.exists():
-                return True, process.pid, "Plot window opened"
-            time.sleep(poll_interval)
-            waited += poll_interval
+        if result.success:
+            return True, result.process.pid, "Plot window opened"
 
-            # Check if process failed early
-            if process.poll() is not None:
-                stderr = process.stderr.read().decode() if process.stderr else ""
-                # Check for module errors and provide helpful message
-                module_error = format_module_error(stderr, python_cmd)
-                if module_error:
-                    return False, 0, module_error
-                return False, 0, f"Script failed: {stderr}"
-
-        # Timeout waiting for PNG
-        return False, process.pid, "Timeout waiting for PNG (script may still be running)"
+        # On failure, return 0 for pid if process failed, otherwise actual pid
+        pid = 0 if result.process.poll() is not None else result.process.pid
+        return False, pid, result.message
 
     except Exception as e:
         return False, 0, f"Error: {e}"
+
+
+def handle_clean() -> int:
+    """Handle --clean command. Returns exit code."""
+    ensure_viz_dir()
+    count = 0
+    for f in VIZ_DIR.iterdir():
+        if f.is_file():
+            f.unlink()
+            count += 1
+    print(f"Cleaned {count} files from {VIZ_DIR}")
+    return 0
+
+
+def handle_list() -> int:
+    """Handle --list command. Returns exit code."""
+    ensure_viz_dir()
+    json_files = sorted(VIZ_DIR.glob("*.json"), key=lambda f: f.stat().st_mtime, reverse=True)
+    if not json_files:
+        print("No visualizations found")
+        return 0
+
+    # Collect metadata
+    rows = []
+    for jf in json_files:
+        meta = json.loads(jf.read_text())
+        rows.append({
+            "id": meta.get("id", jf.stem),
+            "desc": meta.get("desc") or "-",
+            "created": meta.get("created", "")[:16].replace("T", " "),
+        })
+
+    # Calculate column widths
+    id_width = max(len("ID"), max(len(r["id"]) for r in rows))
+    desc_width = max(len("Description"), max(len(r["desc"]) for r in rows))
+
+    # Print table
+    header = f"{'ID':<{id_width}}  {'Description':<{desc_width}}  Created"
+    print(header)
+    print(f"{'-' * id_width}  {'-' * desc_width}  {'-' * 16}")
+    for r in rows:
+        print(f"{r['id']:<{id_width}}  {r['desc']:<{desc_width}}  {r['created']}")
+    return 0
+
+
+def handle_marimo_show(args: argparse.Namespace) -> int:
+    """Handle --marimo --show command. Returns exit code."""
+    notebook_path = Path(args.notebook_path)
+
+    handler = MarimoHandler()
+    success, output = run_show(
+        handler=handler,
+        target_var=args.target_var,
+        source_path=notebook_path,
+        num_rows=args.rows,
+    )
+
+    if success:
+        print(output)
+    else:
+        print(f"error: {output}", file=sys.stderr)
+
+    return 0 if success else 1
+
+
+def handle_marimo_plot(args: argparse.Namespace, plot_code: str) -> int:
+    """Handle --marimo plot command. Returns exit code."""
+    notebook_path = Path(args.notebook_path)
+    final_id = get_unique_id(args.suggested_id)
+
+    handler = MarimoHandler()
+    success, message, png_path = run_plot(
+        handler=handler,
+        plot_code=plot_code,
+        viz_id=final_id,
+        description=args.description,
+        source_path=notebook_path,
+        target_var=args.target_var,
+        target_line=args.target_line,
+    )
+
+    # Print human-readable output
+    print(f"Plot: {final_id}")
+    if args.description:
+        print(f'  "{args.description}"')
+    if png_path:
+        print(f"  png: {png_path}")
+    print(f"  source: {notebook_path}")
+
+    if not success:
+        print(f"  error: {message}")
+
+    return 0 if success else 1
+
+
+def handle_standalone_script(args: argparse.Namespace, script_content: str) -> int:
+    """Handle standalone script execution. Returns exit code."""
+    final_id = get_unique_id(args.suggested_id)
+    png_path = VIZ_DIR / f"{final_id}.png"
+
+    handler = DefaultHandler()
+    success, message, png_path_result = run_plot(
+        handler=handler,
+        plot_code=script_content,
+        viz_id=final_id,
+        description=args.description,
+    )
+
+    # Print human-readable output
+    print(f"Plot: {final_id}")
+    if args.description:
+        print(f'  "{args.description}"')
+    print(f"  png: {png_path}")
+
+    if not success:
+        print(f"  error: {message}")
+
+    # Check if PNG was actually created
+    if success and not png_path.exists():
+        print("  warning: Script executed but PNG was not created")
+
+    return 0 if success else 1
 
 
 def main():
@@ -804,49 +1387,18 @@ def main():
     parser.add_argument("--notebook", dest="notebook_path", help="Path to marimo notebook (.nb.py)")
     parser.add_argument("--target-var", dest="target_var", help="Variable to extract from notebook")
     parser.add_argument("--target-line", dest="target_line", type=int, help="Line number for intermediate state capture")
+    parser.add_argument("--show", action="store_true", help="Show mode: print dataframe info to console instead of plotting")
+    parser.add_argument("--rows", dest="rows", type=int, default=5, help="Number of rows to display in show mode (default: 5)")
 
     args = parser.parse_args()
 
-    # Handle clean action early
+    # Handle clean action
     if args.clean:
-        ensure_viz_dir()
-        count = 0
-        for f in VIZ_DIR.iterdir():
-            if f.is_file():
-                f.unlink()
-                count += 1
-        print(f"Cleaned {count} files from {VIZ_DIR}")
-        sys.exit(0)
+        sys.exit(handle_clean())
 
     # Handle list action
     if args.list:
-        ensure_viz_dir()
-        json_files = sorted(VIZ_DIR.glob("*.json"), key=lambda f: f.stat().st_mtime, reverse=True)
-        if not json_files:
-            print("No visualizations found")
-            sys.exit(0)
-
-        # Collect metadata
-        rows = []
-        for jf in json_files:
-            meta = json.loads(jf.read_text())
-            rows.append({
-                "id": meta.get("id", jf.stem),
-                "desc": meta.get("desc") or "-",
-                "created": meta.get("created", "")[:16].replace("T", " "),
-            })
-
-        # Calculate column widths
-        id_width = max(len("ID"), max(len(r["id"]) for r in rows))
-        desc_width = max(len("Description"), max(len(r["desc"]) for r in rows))
-
-        # Print table
-        header = f"{'ID':<{id_width}}  {'Description':<{desc_width}}  Created"
-        print(header)
-        print(f"{'-' * id_width}  {'-' * desc_width}  {'-' * 16}")
-        for r in rows:
-            print(f"{r['id']:<{id_width}}  {r['desc']:<{desc_width}}  {r['created']}")
-        sys.exit(0)
+        sys.exit(handle_list())
 
     # Handle marimo notebook mode
     if args.marimo:
@@ -862,6 +1414,10 @@ def main():
             print(f"error: Notebook not found: {notebook_path}", file=sys.stderr)
             sys.exit(1)
 
+        # Handle --show mode (print dataframe to console)
+        if args.show:
+            sys.exit(handle_marimo_show(args))
+
         # Read plot code from stdin
         if sys.stdin.isatty():
             print("error: Pipe plot code to stdin for marimo mode", file=sys.stderr)
@@ -872,36 +1428,9 @@ def main():
             print("error: Empty plot code provided", file=sys.stderr)
             sys.exit(1)
 
-        # Get unique ID
-        final_id = get_unique_id(args.suggested_id)
+        sys.exit(handle_marimo_plot(args, plot_code))
 
-        # Run the marimo notebook
-        success, message, png_path = run_marimo_notebook(
-            notebook_path=notebook_path,
-            target_vars=[args.target_var],
-            plot_code=plot_code,
-            viz_id=final_id,
-            description=args.description,
-            target_line=args.target_line,
-        )
-
-        # Print human-readable output
-        print(f"Plot: {final_id}")
-        if args.description:
-            print(f'  "{args.description}"')
-        if png_path:
-            print(f"  png: {png_path}")
-        print(f"  source: {notebook_path}")
-
-        if not success:
-            print(f"  error: {message}")
-
-        sys.exit(0 if success else 1)
-
-    # Ensure output directory exists
-    ensure_viz_dir()
-
-    # Read script content
+    # Handle standalone script mode
     if args.script_file:
         try:
             with open(args.script_file, 'r') as f:
@@ -920,48 +1449,7 @@ def main():
         print("error: Empty script provided", file=sys.stderr)
         sys.exit(1)
 
-    # Get unique ID
-    final_id = get_unique_id(args.suggested_id)
-
-    # Determine paths
-    script_path = VIZ_DIR / f"{final_id}.py"
-    png_path = VIZ_DIR / f"{final_id}.png"
-
-    # Inject savefig
-    modified_script = inject_savefig(script_content, str(png_path))
-
-    # Write script
-    script_path.write_text(modified_script)
-
-    # Execute script in background (non-blocking)
-    success, pid, message = run_script_background(script_path, png_path)
-
-    # Write sidecar JSON metadata file
-    json_path = VIZ_DIR / f"{final_id}.json"
-    metadata = {
-        "id": final_id,
-        "desc": args.description,
-        "png": str(png_path),
-        "script": str(script_path),
-        "created": datetime.now().isoformat(timespec="seconds"),
-        "pid": pid,
-    }
-    json_path.write_text(json.dumps(metadata, indent=2))
-
-    # Print human-readable output
-    print(f"Plot: {final_id}")
-    if args.description:
-        print(f'  "{args.description}"')
-    print(f"  png: {png_path}")
-
-    if not success:
-        print(f"  error: {message}")
-
-    # Check if PNG was actually created
-    if success and not png_path.exists():
-        print("  warning: Script executed but PNG was not created")
-
-    sys.exit(0 if success else 1)
+    sys.exit(handle_standalone_script(args, script_content))
 
 
 if __name__ == "__main__":

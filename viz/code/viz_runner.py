@@ -623,6 +623,134 @@ def _is_main_block(node: ast.If) -> bool:
     return False
 
 
+# ============================================================================
+# Import Deduplication (prevents multiple-definitions errors)
+# ============================================================================
+
+
+def extract_setup_imports(setup_code: str) -> dict[str, str]:
+    """
+    Extract import statements from the setup block.
+
+    Returns a dict mapping imported names to their import statements.
+    E.g., {"np": "import numpy as np", "pd": "import pandas as pd"}
+    """
+    import textwrap
+
+    imports = {}
+
+    # Dedent the code first to handle indented setup blocks
+    dedented = textwrap.dedent(setup_code)
+
+    try:
+        tree = ast.parse(dedented)
+    except SyntaxError:
+        # Fall back to regex if AST parsing fails
+        return _extract_imports_regex(setup_code)
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                name = alias.asname or alias.name
+                imports[name] = f"import {alias.name}" + (f" as {alias.asname}" if alias.asname else "")
+
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            for alias in node.names:
+                name = alias.asname or alias.name
+                imports[name] = f"from {module} import {alias.name}" + (f" as {alias.asname}" if alias.asname else "")
+
+    return imports
+
+
+def _extract_imports_regex(code: str) -> dict[str, str]:
+    """Fallback regex-based import extraction."""
+    imports = {}
+
+    # Match: import X as Y, import X
+    import_pattern = re.compile(r'^import\s+(\w+)(?:\s+as\s+(\w+))?', re.MULTILINE)
+    for match in import_pattern.finditer(code):
+        module = match.group(1)
+        alias = match.group(2) or module
+        imports[alias] = match.group(0)
+
+    # Match: from X import Y as Z, from X import Y
+    from_pattern = re.compile(r'^from\s+[\w.]+\s+import\s+(\w+)(?:\s+as\s+(\w+))?', re.MULTILINE)
+    for match in from_pattern.finditer(code):
+        name = match.group(1)
+        alias = match.group(2) or name
+        imports[alias] = match.group(0)
+
+    return imports
+
+
+def strip_imports_from_action_code(action_code: str, setup_imports: dict[str, str]) -> str:
+    """
+    Remove import statements from action code that are already in setup block.
+
+    This prevents marimo's multiple-definitions error when injecting plotting
+    code that imports modules already imported in app.setup.
+
+    Args:
+        action_code: The plotting/action code to inject
+        setup_imports: Dict of {name: import_statement} from setup block
+
+    Returns:
+        Action code with duplicate imports removed
+    """
+    lines = action_code.splitlines(keepends=True)
+    result_lines = []
+
+    for line in lines:
+        stripped = line.strip()
+
+        # Check if this is an import line
+        if stripped.startswith('import ') or stripped.startswith('from '):
+            imported_names = _extract_imported_names_from_line(stripped)
+
+            # Check if ALL names in this import are already in setup
+            all_in_setup = all(name in setup_imports for name in imported_names)
+
+            if all_in_setup and imported_names:
+                # Skip this import line - it's already in setup
+                continue
+
+        result_lines.append(line)
+
+    return ''.join(result_lines)
+
+
+def _extract_imported_names_from_line(import_line: str) -> list[str]:
+    """
+    Extract the names that would be bound by an import statement.
+
+    Examples:
+        'import numpy as np' -> ['np']
+        'import numpy' -> ['numpy']
+        'from os import path' -> ['path']
+        'from typing import List, Dict' -> ['List', 'Dict']
+    """
+    import_line = import_line.strip()
+
+    # Handle: import X as Y
+    match = re.match(r'^import\s+(\w+)(?:\s+as\s+(\w+))?$', import_line)
+    if match:
+        return [match.group(2) or match.group(1)]
+
+    # Handle: from X import Y, Z, ...
+    match = re.match(r'^from\s+[\w.]+\s+import\s+(.+)$', import_line)
+    if match:
+        names = []
+        for part in match.group(1).split(','):
+            part = part.strip()
+            alias_match = re.match(r'(\w+)(?:\s+as\s+(\w+))?', part)
+            if alias_match:
+                names.append(alias_match.group(2) or alias_match.group(1))
+        return names
+
+    return []
+
+
 def get_required_cells(
     parsed: ParsedNotebook, target_vars: list[str]
 ) -> tuple[list[int], set[str]]:
@@ -812,6 +940,12 @@ def assemble_pruned_notebook(
     """
     parts = []
 
+    # Strip duplicate imports from plot_code to prevent multiple-definitions errors
+    # This is done BEFORE injection to avoid marimo check failures
+    if parsed.setup_code:
+        setup_imports = extract_setup_imports(parsed.setup_code)
+        plot_code = strip_imports_from_action_code(plot_code, setup_imports)
+
     # 1. Preamble
     parts.append(parsed.preamble)
 
@@ -894,26 +1028,54 @@ def _indent_code(code: str, indent: str) -> str:
     return "".join(indented)
 
 
+def validate_python_env(python_cmd: list[str], required_module: str = "matplotlib") -> bool:
+    """
+    Test if a Python environment can import a required module.
+
+    Returns True if import succeeds, False otherwise.
+    """
+    try:
+        result = subprocess.run(
+            [*python_cmd, "-c", f"import {required_module}"],
+            capture_output=True,
+            timeout=10,
+        )
+        return result.returncode == 0
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return False
+
+
 def get_python_command(cwd: Path | None = None) -> list[str]:
     """
-    Determine Python command based on environment.
+    Determine Python command with fallback chain and import validation.
 
-    1. If VIZ_PYTHON_CMD env var is set, use that
-    2. If cwd provided and has a uv project (pyproject.toml or uv.lock), use 'uv run python'
-    3. Otherwise use sys.executable (the Python running viz_runner.py)
+    Priority:
+    1. VIZ_PYTHON_CMD env var (explicit override, no validation)
+    2. Project environment (cwd with uv markers) - validated
+    3. System Python on PATH - validated
+    4. Viz skill's own environment - guaranteed fallback
     """
-    # Check env var first
+    # Explicit override - trust the user
     env_cmd = os.environ.get("VIZ_PYTHON_CMD")
     if env_cmd:
         return shlex.split(env_cmd)
 
-    # Check for uv project markers if cwd provided
+    # Try project's environment first
     if cwd is not None:
         uv_markers = [cwd / "pyproject.toml", cwd / "uv.lock"]
         if any(marker.exists() for marker in uv_markers):
-            return ["uv", "run", "python"]
+            project_cmd = ["uv", "run", "--directory", str(cwd), "python"]
+            if validate_python_env(project_cmd):
+                return project_cmd
 
-    return [sys.executable]
+    # Try system Python on PATH
+    system_cmd = ["python"]
+    if validate_python_env(system_cmd):
+        return system_cmd
+
+    # Fall back to viz skill's own environment (guaranteed deps)
+    viz_skill_dir = Path(__file__).parent
+    return ["uv", "run", "--directory", str(viz_skill_dir), "python"]
 
 
 def run_marimo_notebook(

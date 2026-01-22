@@ -52,6 +52,7 @@ from viz_runner import (
     run_plot,
     run_script_background,
     run_show,
+    validate_python_env,
 )
 
 
@@ -790,34 +791,116 @@ class TestAssemblePrunedNotebook:
 # =============================================================================
 
 
+class TestValidatePythonEnv:
+    """Tests for validate_python_env function."""
+
+    def test_valid_env_returns_true(self):
+        """Valid environment with module returns True."""
+        # sys.executable should be able to import sys (always available)
+        result = validate_python_env([sys.executable], required_module="sys")
+        assert result is True
+
+    def test_missing_module_returns_false(self):
+        """Environment missing module returns False."""
+        # Try to import a module that definitely doesn't exist
+        result = validate_python_env([sys.executable], required_module="nonexistent_module_xyz123")
+        assert result is False
+
+    def test_invalid_python_returns_false(self):
+        """Invalid Python command returns False."""
+        result = validate_python_env(["/nonexistent/python"])
+        assert result is False
+
+    def test_timeout_returns_false(self, monkeypatch):
+        """Timeout during validation returns False."""
+        def timeout_run(*args, **kwargs):
+            raise subprocess.TimeoutExpired(cmd="test", timeout=10)
+
+        monkeypatch.setattr(subprocess, "run", timeout_run)
+
+        result = validate_python_env(["python"])
+        assert result is False
+
+
 class TestGetPythonCommand:
     """Tests for get_python_command."""
 
     def test_env_var_override(self, tmp_path, monkeypatch):
-        """VIZ_PYTHON_CMD env var takes precedence."""
+        """VIZ_PYTHON_CMD env var takes precedence (no validation)."""
         monkeypatch.setenv("VIZ_PYTHON_CMD", "/custom/python -u")
 
         result = get_python_command(tmp_path)
 
         assert result == ["/custom/python", "-u"]
 
-    def test_uv_project_detected(self, tmp_path, monkeypatch):
-        """Detect uv project and use 'uv run python'."""
+    def test_uv_project_detected_with_validation(self, tmp_path, monkeypatch):
+        """Detect uv project and use 'uv run --directory ... python' when validated."""
         monkeypatch.delenv("VIZ_PYTHON_CMD", raising=False)
         (tmp_path / "pyproject.toml").write_text("[project]\nname='test'")
 
+        # Mock validate_python_env to return True for project cmd
+        def mock_validate(cmd, required_module="matplotlib"):
+            return "--directory" in cmd
+
+        monkeypatch.setattr(viz_runner, "validate_python_env", mock_validate)
+
         result = get_python_command(tmp_path)
 
-        assert result == ["uv", "run", "python"]
+        assert result == ["uv", "run", "--directory", str(tmp_path), "python"]
 
-    def test_fallback_to_sys_executable(self, tmp_path, monkeypatch):
-        """Fall back to sys.executable when no markers."""
+    def test_uv_project_fails_validation_falls_to_system(self, tmp_path, monkeypatch):
+        """If project env fails validation, try system Python."""
         monkeypatch.delenv("VIZ_PYTHON_CMD", raising=False)
-        # Empty directory, no pyproject.toml
+        (tmp_path / "pyproject.toml").write_text("[project]\nname='test'")
+
+        call_count = [0]
+
+        def mock_validate(cmd, required_module="matplotlib"):
+            call_count[0] += 1
+            # First call (project) fails, second call (system python) succeeds
+            if call_count[0] == 1:
+                return False  # Project env fails
+            return True  # System python succeeds
+
+        monkeypatch.setattr(viz_runner, "validate_python_env", mock_validate)
 
         result = get_python_command(tmp_path)
 
-        assert result == [sys.executable]
+        assert result == ["python"]
+
+    def test_fallback_to_viz_skill_env(self, tmp_path, monkeypatch):
+        """Fall back to viz skill's environment when all else fails."""
+        monkeypatch.delenv("VIZ_PYTHON_CMD", raising=False)
+
+        # Mock all validation to fail
+        def mock_validate(cmd, required_module="matplotlib"):
+            return False
+
+        monkeypatch.setattr(viz_runner, "validate_python_env", mock_validate)
+
+        result = get_python_command(tmp_path)
+
+        # Should return viz skill's own environment
+        assert result[0] == "uv"
+        assert result[1] == "run"
+        assert result[2] == "--directory"
+        # The directory should be the viz skill's code directory
+        assert "viz" in result[3] or "code" in result[3]
+        assert result[4] == "python"
+
+    def test_system_python_used_when_no_project(self, tmp_path, monkeypatch):
+        """System Python used when no project markers and it validates."""
+        monkeypatch.delenv("VIZ_PYTHON_CMD", raising=False)
+        # No pyproject.toml or uv.lock in tmp_path
+
+        def mock_validate(cmd, required_module="matplotlib"):
+            return cmd == ["python"]
+
+        monkeypatch.setattr(viz_runner, "validate_python_env", mock_validate)
+
+        result = get_python_command(tmp_path)
+
+        assert result == ["python"]
 
 
 # =============================================================================
@@ -955,7 +1038,9 @@ class TestRunScriptBackground:
         mock_process.pid = 12345
 
         with patch("viz_runner.subprocess.Popen", return_value=mock_process):
-            success, pid, message = run_script_background(script_path, png_path)
+            # Also mock validate_python_env to avoid subprocess.run calls
+            with patch("viz_runner.validate_python_env", return_value=True):
+                success, pid, message = run_script_background(script_path, png_path)
 
         assert success is False
         assert "Error occurred" in message
@@ -1185,20 +1270,22 @@ class TestRunPlot:
         mock_process.stderr.read.return_value = b""
 
         with patch("viz_runner.subprocess.Popen", return_value=mock_process):
-            # Simulate PNG being created
-            def create_png(*args, **kwargs):
-                png_path = viz_dir_clean / "test_plot.png"
-                png_path.write_bytes(b"PNG")
-                return None
+            # Also mock validate_python_env to avoid subprocess.run calls
+            with patch("viz_runner.validate_python_env", return_value=True):
+                # Simulate PNG being created
+                def create_png(*args, **kwargs):
+                    png_path = viz_dir_clean / "test_plot.png"
+                    png_path.write_bytes(b"PNG")
+                    return None
 
-            mock_process.poll.side_effect = [None, create_png, 0]
+                mock_process.poll.side_effect = [None, create_png, 0]
 
-            success, message, png_path = run_plot(
-                handler=handler,
-                plot_code=plot_code,
-                viz_id="test_plot",
-                description="Test plot",
-            )
+                success, message, png_path = run_plot(
+                    handler=handler,
+                    plot_code=plot_code,
+                    viz_id="test_plot",
+                    description="Test plot",
+                )
 
         # Script should be written
         script_path = viz_dir_clean / "test_plot.py"
@@ -1222,22 +1309,24 @@ class TestRunPlot:
         mock_process.stderr.read.return_value = b""
 
         with patch("viz_runner.subprocess.Popen", return_value=mock_process):
-            # Simulate PNG being created
-            def create_png(*args, **kwargs):
-                png_path = viz_dir_clean / "marimo_plot.png"
-                png_path.write_bytes(b"PNG")
-                return None
+            # Also mock validate_python_env to avoid subprocess.run calls
+            with patch("viz_runner.validate_python_env", return_value=True):
+                # Simulate PNG being created
+                def create_png(*args, **kwargs):
+                    png_path = viz_dir_clean / "marimo_plot.png"
+                    png_path.write_bytes(b"PNG")
+                    return None
 
-            mock_process.poll.side_effect = [None, create_png, 0]
+                mock_process.poll.side_effect = [None, create_png, 0]
 
-            success, message, png_path = run_plot(
-                handler=handler,
-                plot_code=plot_code,
-                viz_id="marimo_plot",
-                description="Marimo test plot",
-                source_path=sample_notebook_simple,
-                target_var="df",
-            )
+                success, message, png_path = run_plot(
+                    handler=handler,
+                    plot_code=plot_code,
+                    viz_id="marimo_plot",
+                    description="Marimo test plot",
+                    source_path=sample_notebook_simple,
+                    target_var="df",
+                )
 
         # Script should be written with marimo structure
         script_path = viz_dir_clean / "marimo_plot.py"

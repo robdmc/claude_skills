@@ -35,7 +35,7 @@ Both work. Natural addressing or slash command — your choice.
     └── 2026-01-23-16-20-etl.py
 ```
 
-Scripts (`assets.py`, `entry.py`, `validate.py`) live in the skill's `scripts/` subdirectory and operate on `.scribe/` in the current working directory.
+Scripts (`entry.py`, `assets.py`, `validate.py`, `common.py`) live in the skill's `scripts/` subdirectory and operate on `.scribe/` in the current working directory.
 
 **Python requirement:** Scripts require Python 3.9+ (they use built-in generic types like `list[str]`).
 
@@ -59,7 +59,7 @@ The `entry.py` script handles ID generation automatically:
 
 This ID links entries to archived assets and enables cross-references.
 
-To find the entry for an archived asset, extract the ID prefix from the filename (everything before the original filename) and search for `<!-- id: {entry-id} -->` in the logs.
+To find the entry for an archived asset, extract the ID prefix from the filename (everything before the original filename) and use `Grep` for `<!-- id: {entry-id} -->` in `.scribe/`.
 
 **Entries are append-only.** To add to a previous entry, create a follow-up entry with a **Related** section linking back. (The `<!-- id: ... -->` comment is added automatically by `entry.py`.)
 
@@ -84,7 +84,7 @@ For multiple related entries:
 
 The **Related** section links entries together. The narrative explains the relationship — whether building on previous work, closing a thread, or marking something as a dead end.
 
-**Tracing threads:** To reconstruct a full thread, follow **Related** links backward from the most recent entry. To find entries that build on a given entry, search for its ID in **Related** sections across the logs.
+**Tracing threads:** To reconstruct a full thread, follow **Related** links backward from the most recent entry. To find entries that build on a given entry, use `Grep` for its ID in `.scribe/` to find **Related** sections that reference it.
 
 ## Four Modes
 
@@ -337,7 +337,7 @@ Note: The `<!-- id: ... -->` comment is injected automatically by `entry.py` —
 
 When the user wants to run or inspect an archived file:
 
-1. Search the logs to find the relevant asset and its original path
+1. Use `Grep` in `.scribe/` to find the relevant asset and its original path
 2. Call the restore script to copy it to the original directory
 3. Run or inspect from there
 

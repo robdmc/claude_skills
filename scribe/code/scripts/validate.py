@@ -1,20 +1,14 @@
 #!/usr/bin/env python3
-"""Validate scribe entries for consistency."""
+"""Validate scribe entries for consistency.
+
+Requires Python 3.9+ (uses built-in generic types).
+"""
 
 import re
 import sys
 from pathlib import Path
 
-# Entry ID pattern: YYYY-MM-DD-HH-MM with optional -NN suffix (zero-padded)
-ENTRY_ID_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}-\d{2}-\d{2}(-\d{2,})?$")
-
-
-def find_scribe_dir():
-    """Find the .scribe directory in the current working directory."""
-    scribe_dir = Path.cwd() / ".scribe"
-    if scribe_dir.exists():
-        return scribe_dir
-    return None
+from common import ENTRY_ID_PATTERN, find_scribe_dir
 
 
 def extract_entries(log_file: Path) -> list[dict]:

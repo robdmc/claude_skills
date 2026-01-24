@@ -1,11 +1,13 @@
 ---
 name: scribe
-description: Maintains a narrative log of exploratory work with file snapshots. Capabilities: (1) Log entries with propose-confirm flow, (2) Archive file snapshots linked to entries, (3) Restore archived files, (4) Query past work by time or topic, (5) Link related entries for thread tracking. Activates when user addresses "scribe" directly (e.g., "hey scribe, log this", "scribe, save this notebook", "scribe, what did we try yesterday?") or uses `/scribe` commands.
+description: Maintains a narrative log of exploratory work with file archives. Capabilities: (1) Log entries with propose-confirm flow, (2) Archive files linked to entries, (3) Restore archived files, (4) Query past work by time or topic, (5) Link related entries for thread tracking. Activates when user addresses "scribe" directly (e.g., "hey scribe, log this", "scribe, save this notebook", "scribe, what did we try yesterday?") or uses `/scribe` commands.
+allowed-tools: Read, Write, Bash(python:*), Bash(mkdir:*), Bash(cat:*), Bash(ls:*), Bash(tail:*), Glob, Grep
+argument-hint: [log | save <file> | ask <question>]
 ---
 
 # Scribe
 
-The scribe is a persona that sits beside you while you work. When you address it directly, it listens and acts. It maintains a narrative log of your exploratory work and can archive snapshots of important files.
+The scribe is a persona that sits beside you while you work. When you address it directly, it listens and acts. It maintains a narrative log of your exploratory work and can archive important files at key moments.
 
 Address the scribe naturally:
 
@@ -28,12 +30,23 @@ Both work. Natural addressing or slash command — your choice.
 ```
 .scribe/
 ├── 2026-01-23.md      # Daily log files (append-only)
-└── assets/            # Archived snapshots (write-once)
+└── assets/            # Archived files (write-once)
     ├── 2026-01-23-14-35-clustering.ipynb
     └── 2026-01-23-16-20-etl.py
 ```
 
-Scripts (`assets.py`, `entry.py`, `validate.py`) live in the skill directory and operate on `.scribe/` in the current working directory.
+Scripts (`assets.py`, `entry.py`, `validate.py`) live in the skill's `scripts/` subdirectory and operate on `.scribe/` in the current working directory.
+
+**Python requirement:** Scripts require Python 3.9+ (they use built-in generic types like `list[str]}`.
+
+**Script paths:** In the examples below, `{SKILL_DIR}` is a placeholder for this skill's installation directory. When you (Claude) load this SKILL.md, note its file path and use the containing directory as the base. For example, if you read this file from `/home/user/.claude/skills/scribe/SKILL.md`, then `{SKILL_DIR}` is `/home/user/.claude/skills/scribe`, and `{SKILL_DIR}/scripts/entry.py` becomes `/home/user/.claude/skills/scribe/scripts/entry.py`.
+
+**Command pattern:** To avoid repeated permission prompts, use the `--file` flag with a temp file:
+
+1. Use Claude's **Write tool** to create `/tmp/scribe_entry.md` (no bash escaping issues)
+2. Run `python {SKILL_DIR}/scripts/entry.py write --file /tmp/scribe_entry.md` (simple, repeatable command)
+
+This separates content (handled by Write tool) from execution (simple bash command that can be approved once).
 
 ## Entry IDs
 
@@ -83,7 +96,7 @@ When the user asks to log, Claude proposes an entry for confirmation before writ
 
 1. **Assess** — What happened since the last entry? Check conversation context, or if new session, check recent log files and file modifications.
 2. **Propose** — Draft the entry and show it to the user
-3. **Suggest snapshots** — If files were modified, offer them as optional archives (default: no snapshots)
+3. **Suggest archives** — If files were modified, offer them as optional archives (default: no archives)
 4. **Confirm** — Wait for user approval or changes
 5. **Write** — Only after confirmation, write to the log (and archive if requested)
 
@@ -139,10 +152,14 @@ If Claude has no conversation context (new session), it should:
 
 The user may add context: `scribe — this was a dead end`. Incorporate their editorial judgment.
 
-**Entry format:**
+**Entry format (input):**
+
+Provide the title without a timestamp — the script adds the current time automatically.
+
+(Legacy format `## HH:MM — Title` is also accepted; the script will use the provided time instead of current time.)
 
 ```markdown
-## HH:MM — [Brief title]
+## [Brief title]
 
 [Narrative paragraph describing what happened]
 
@@ -155,13 +172,25 @@ The user may add context: `scribe — this was a dead end`. Incorporate their ed
 ---
 ```
 
+**Entry format (output):**
+
+The script prepends the timestamp, so the written entry looks like:
+
+```markdown
+## 14:35 — [Brief title]
+<!-- id: 2026-01-23-14-35 -->
+
+...
+```
+
 **Writing the entry:**
 
-Pipe the entry to the `entry.py` script — it handles ID generation, collision checking, and appending to the correct file:
+Use Claude's Write tool to create a temp file, then pass it to `entry.py`:
 
-```bash
-python entry.py write << 'EOF'
-## 14:35 — Fixed null handling in ETL pipeline
+**Step 1:** Use the Write tool to create `/tmp/scribe_entry.md`:
+
+```markdown
+## Fixed null handling in ETL pipeline
 
 Found that nulls originated from the 2019 migration.
 
@@ -171,15 +200,20 @@ Found that nulls originated from the 2019 migration.
 **Status:** Ready for validation
 
 ---
-EOF
 ```
 
-(Run scripts from this skill's `scripts/` directory. They operate on `.scribe/` in the current working directory.)
+**Step 2:** Run the script with `--file`:
+
+```bash
+python {SKILL_DIR}/scripts/entry.py write --file /tmp/scribe_entry.md
+```
 
 Output: `Entry written: 2026-01-23-14-35`
 
 The script automatically:
-- Generates the entry ID from the date + time in the header
+- Gets the current system time (24-hour local time)
+- Prepends the timestamp to the title (`## Title` → `## HH:MM — Title`)
+- Generates the entry ID from the date + time
 - Handles collisions (adds `-02`, `-03` suffix if needed)
 - Injects the `<!-- id: ... -->` comment
 - Creates today's log file if it doesn't exist
@@ -188,10 +222,10 @@ The script automatically:
 **Other entry commands:**
 
 ```bash
-python entry.py new-id              # Generate ID for current time
-python entry.py new-id --time 14:35 # Generate ID for specific time
-python entry.py last                # Show last entry ID from today
-python entry.py last --with-title   # Show last entry ID and title (for Related links)
+python {SKILL_DIR}/scripts/entry.py new-id              # Generate ID for current time
+python {SKILL_DIR}/scripts/entry.py new-id --time 14:35 # Generate ID for specific time
+python {SKILL_DIR}/scripts/entry.py last                # Show last entry ID from today's log only
+python {SKILL_DIR}/scripts/entry.py last --with-title   # Include title (useful for Related links)
 ```
 
 **Editing the latest entry:**
@@ -199,19 +233,19 @@ python entry.py last --with-title   # Show last entry ID and title (for Related 
 If something goes wrong (validation fails, user wants to change something), use `edit-latest`:
 
 ```bash
-python entry.py edit-latest show       # Display the latest entry
-python entry.py edit-latest delete     # Remove latest entry AND its assets
-python entry.py edit-latest replace    # Replace latest entry (reads from stdin)
-python entry.py edit-latest rearchive <file>  # Re-archive a file for latest entry
-python entry.py edit-latest unarchive  # Delete assets for latest entry (keep entry)
+python {SKILL_DIR}/scripts/entry.py edit-latest show       # Display the latest entry
+python {SKILL_DIR}/scripts/entry.py edit-latest delete     # Remove latest entry AND its assets
+python {SKILL_DIR}/scripts/entry.py edit-latest replace --file /tmp/scribe_entry.md  # Replace latest entry
+python {SKILL_DIR}/scripts/entry.py edit-latest rearchive <file>  # Re-archive a file for latest entry
+python {SKILL_DIR}/scripts/entry.py edit-latest unarchive  # Delete assets for latest entry (keep entry)
 ```
 
 **Common recovery flows:**
 
-- **Abort after failed archive:** `edit-latest delete` removes entry + assets
-- **Fix wrong file archived:** `edit-latest rearchive correct_file.py`
-- **Fix entry content:** `edit-latest replace << 'EOF' ... EOF`
-- **Remove archives but keep entry:** `edit-latest unarchive`, then `edit-latest replace` to remove **Archived** section
+- **Abort after failed archive:** `python {SKILL_DIR}/scripts/entry.py edit-latest delete` removes entry + assets
+- **Fix wrong file archived:** `python {SKILL_DIR}/scripts/entry.py edit-latest rearchive correct_file.py`
+- **Fix entry content:** Write corrected entry to `/tmp/scribe_entry.md`, then `python {SKILL_DIR}/scripts/entry.py edit-latest replace --file /tmp/scribe_entry.md`
+- **Remove archives but keep entry:** `python {SKILL_DIR}/scripts/entry.py edit-latest unarchive`, then replace to remove **Archived** section
 
 **After writing the entry**, display a brief summary so the user can verify:
 
@@ -226,14 +260,14 @@ python entry.py edit-latest unarchive  # Delete assets for latest entry (keep en
 Then run validation:
 
 ```bash
-python validate.py
+python {SKILL_DIR}/scripts/validate.py
 ```
 
 Keep it short — just enough for the user to confirm the entry captured their intent.
 
 ### 2. Archiving: `scribe, save/remember/snapshot [file]`
 
-When the user wants to save a snapshot of a file, they might say:
+When the user wants to archive a file, they might say:
 
 - "scribe, save this notebook"
 - "scribe, remember clustering.ipynb — it's finally working"
@@ -245,18 +279,18 @@ When this happens:
 
 1. Write the narrative entry as usual
 2. Call the archive script to copy the file to `.scribe/assets/`
-3. Add an **Archived** section to the entry linking to the snapshot
+3. Add an **Archived** section to the entry linking to the archived file
 
 **Assets script usage:**
 
 ```bash
-python assets.py save <entry-id> <file> [<file> ...]
+python {SKILL_DIR}/scripts/assets.py save <entry-id> <file> [<file> ...]
 ```
 
 Example:
 
 ```bash
-python assets.py save 2026-01-23-14-35 clustering.ipynb
+python {SKILL_DIR}/scripts/assets.py save 2026-01-23-14-35 clustering.ipynb
 ```
 
 The script copies the file to `.scribe/assets/2026-01-23-14-35-clustering.ipynb`.
@@ -310,7 +344,7 @@ When the user wants to run or inspect an archived file:
 **Restore script usage:**
 
 ```bash
-python assets.py get <asset-filename> --dest <original-directory>
+python {SKILL_DIR}/scripts/assets.py get <asset-filename> --dest <original-directory>
 ```
 
 Example — if the entry shows:
@@ -321,7 +355,7 @@ Example — if the entry shows:
 
 Then restore with:
 ```bash
-python assets.py get 2026-01-23-14-35-transform.py --dest src/pipelines/etl/
+python {SKILL_DIR}/scripts/assets.py get 2026-01-23-14-35-transform.py --dest src/pipelines/etl/
 ```
 
 The script copies the file to `src/pipelines/etl/_2026-01-23-14-35-transform.py` — next to the current version for easy comparison.
@@ -329,15 +363,15 @@ The script copies the file to `src/pipelines/etl/_2026-01-23-14-35-transform.py`
 If the original directory no longer exists, create it first:
 ```bash
 mkdir -p src/pipelines/etl/
-python assets.py get 2026-01-23-14-35-transform.py --dest src/pipelines/etl/
+python {SKILL_DIR}/scripts/assets.py get 2026-01-23-14-35-transform.py --dest src/pipelines/etl/
 ```
 
 **List assets:**
 
 ```bash
-python assets.py list
-python assets.py list 2026-01-23    # filter by date
-python assets.py list transform     # filter by name
+python {SKILL_DIR}/scripts/assets.py list
+python {SKILL_DIR}/scripts/assets.py list 2026-01-23    # filter by date
+python {SKILL_DIR}/scripts/assets.py list transform     # filter by name
 ```
 
 **Important behaviors:**
@@ -387,7 +421,7 @@ tail -50 .scribe/2026-01-{18..24}.md
 
 **Asset queries** — use the list command, then search logs if needed:
 
-- "scribe, show me snapshots of the notebook" → `python assets.py list notebook`
+- "scribe, show me archives of the notebook" → `python {SKILL_DIR}/scripts/assets.py list notebook`
 - "scribe, what version of clustering.ipynb worked?" → search logs for "clustering" + "worked"
 
 **Process:**
@@ -404,14 +438,14 @@ tail -50 .scribe/2026-01-{18..24}.md
 - "scribe, what did we try for the null value problem?"
 - "scribe, when did we last touch the ETL pipeline?"
 - "scribe, show me last week's work"
-- "scribe, what snapshots do we have of the notebook?"
+- "scribe, what archives do we have of the notebook?"
 
 ## Validation
 
 After every entry (logging or archiving), run validation to catch any issues:
 
 ```bash
-python validate.py
+python {SKILL_DIR}/scripts/validate.py
 ```
 
 Validation checks:

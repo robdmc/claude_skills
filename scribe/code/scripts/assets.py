@@ -1,22 +1,15 @@
 #!/usr/bin/env python3
-"""Manage scribe assets — archive and restore files."""
+"""Manage scribe assets — archive and restore files.
+
+Requires Python 3.9+ (uses built-in generic types).
+"""
 
 import argparse
-import re
 import shutil
 import sys
 from pathlib import Path
 
-# Entry ID pattern: YYYY-MM-DD-HH-MM with optional -NN suffix (zero-padded)
-ENTRY_ID_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}-\d{2}-\d{2}(-\d{2,})?$")
-
-
-def find_scribe_dir():
-    """Find the .scribe directory in the current working directory."""
-    scribe_dir = Path.cwd() / ".scribe"
-    if scribe_dir.exists():
-        return scribe_dir
-    return None
+from common import ENTRY_ID_PATTERN, require_scribe_dir
 
 
 def cmd_save(args):
@@ -25,11 +18,8 @@ def cmd_save(args):
         print(f"Error: Invalid entry ID format: {args.entry_id}", file=sys.stderr)
         print("Expected format: YYYY-MM-DD-HH-MM (e.g., 2026-01-23-14-35)", file=sys.stderr)
         sys.exit(1)
-    
-    scribe_dir = find_scribe_dir()
-    if not scribe_dir:
-        print("Error: .scribe directory not found", file=sys.stderr)
-        sys.exit(1)
+
+    scribe_dir = require_scribe_dir()
 
     assets_dir = scribe_dir / "assets"
     assets_dir.mkdir(exist_ok=True)
@@ -53,10 +43,7 @@ def cmd_save(args):
 
 def cmd_get(args):
     """Restore an archived file to the project directory."""
-    scribe_dir = find_scribe_dir()
-    if not scribe_dir:
-        print("Error: .scribe directory not found", file=sys.stderr)
-        sys.exit(1)
+    scribe_dir = require_scribe_dir()
 
     assets_dir = scribe_dir / "assets"
     src = assets_dir / args.asset
@@ -79,10 +66,7 @@ def cmd_get(args):
 
 def cmd_list(args):
     """List archived assets."""
-    scribe_dir = find_scribe_dir()
-    if not scribe_dir:
-        print("Error: .scribe directory not found", file=sys.stderr)
-        sys.exit(1)
+    scribe_dir = require_scribe_dir()
 
     assets_dir = scribe_dir / "assets"
     if not assets_dir.exists():

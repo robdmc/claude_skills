@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Manage scribe log entries — write entries with automatic ID generation."""
+"""Manage scribe log entries — write entries with automatic ID generation.
+
+Requires Python 3.9+ (uses built-in generic types).
+"""
 
 import argparse
 import re
@@ -8,23 +11,16 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-
-def find_scribe_dir():
-    """Find the .scribe directory in the current working directory."""
-    scribe_dir = Path.cwd() / ".scribe"
-    if scribe_dir.exists():
-        return scribe_dir
-    return None
+from common import ENTRY_ID_PATTERN, ENTRY_ID_COMMENT_PATTERN, require_scribe_dir
 
 
 def get_existing_ids(log_file: Path) -> set[str]:
     """Extract all entry IDs from a log file."""
     if not log_file.exists():
         return set()
-    
+
     content = log_file.read_text()
-    id_pattern = re.compile(r"<!-- id: ([\d-]+) -->")
-    return set(id_pattern.findall(content))
+    return set(ENTRY_ID_COMMENT_PATTERN.findall(content))
 
 
 def generate_entry_id(log_file: Path, time_str: str) -> str:
@@ -66,10 +62,11 @@ def inject_entry_id(entry: str, entry_id: str) -> str:
     return "\n".join(result)
 
 
-def find_latest_entry(scribe_dir: Path) -> tuple[Path, str, str, int, int] | None:
+def find_latest_entry(scribe_dir: Path) -> tuple[Path, str | None, str, int, int] | None:
     """
     Find the latest entry across all log files.
     Returns (log_file, entry_id, entry_content, start_pos, end_pos) or None.
+    entry_id may be None if the entry lacks an ID comment.
     """
     # Find all log files
     log_pattern = re.compile(r"^\d{4}-\d{2}-\d{2}\.md$")
@@ -77,36 +74,36 @@ def find_latest_entry(scribe_dir: Path) -> tuple[Path, str, str, int, int] | Non
         [f for f in scribe_dir.iterdir() if log_pattern.match(f.name)],
         reverse=True  # Most recent first
     )
-    
+
     if not log_files:
         return None
-    
+
     # Check each log file starting from most recent
     for log_file in log_files:
         content = log_file.read_text()
-        
+
         # Find all entries by their headers
         header_pattern = re.compile(r"^## \d{2}:\d{2} — .+$", re.MULTILINE)
         matches = list(header_pattern.finditer(content))
-        
+
         if not matches:
             continue
-        
+
         # Get the last entry
         last_match = matches[-1]
         start_pos = last_match.start()
-        
+
         # Entry ends at end of file
         end_pos = len(content)
-        
+
         entry_content = content[start_pos:end_pos]
-        
-        # Extract entry ID
-        id_match = re.search(r"<!-- id: ([\d-]+) -->", entry_content)
+
+        # Extract entry ID using the strict pattern
+        id_match = ENTRY_ID_COMMENT_PATTERN.search(entry_content)
         entry_id = id_match.group(1) if id_match else None
-        
+
         return (log_file, entry_id, entry_content, start_pos, end_pos)
-    
+
     return None
 
 
@@ -127,24 +124,40 @@ def delete_assets_for_entry(scribe_dir: Path, entry_id: str) -> list[str]:
 
 def cmd_write(args):
     """Write an entry to today's log file."""
-    scribe_dir = find_scribe_dir()
-    if not scribe_dir:
-        print("Error: .scribe directory not found", file=sys.stderr)
-        sys.exit(1)
-    
-    # Read entry from stdin
-    entry = sys.stdin.read().strip()
+    scribe_dir = require_scribe_dir()
+
+    # Read entry from file or stdin
+    if args.file:
+        file_path = Path(args.file)
+        if not file_path.exists():
+            print(f"Error: File not found: {args.file}", file=sys.stderr)
+            sys.exit(1)
+        entry = file_path.read_text().strip()
+    else:
+        entry = sys.stdin.read().strip()
+
     if not entry:
-        print("Error: No entry provided (pipe entry via stdin)", file=sys.stderr)
+        print("Error: No entry provided (use --file or pipe via stdin)", file=sys.stderr)
         sys.exit(1)
-    
-    # Extract time from header
-    header_match = re.search(r"^## (\d{2}:\d{2}) — .+$", entry, re.MULTILINE)
-    if not header_match:
-        print("Error: Entry must start with '## HH:MM — Title'", file=sys.stderr)
-        sys.exit(1)
-    
-    time_str = header_match.group(1)
+
+    # Get current time
+    time_str = datetime.now().strftime("%H:%M")
+
+    # Check if entry already has time in header (legacy format: ## HH:MM — Title)
+    legacy_match = re.search(r"^## (\d{2}:\d{2}) — .+$", entry, re.MULTILINE)
+    if legacy_match:
+        # Use provided time (legacy support)
+        time_str = legacy_match.group(1)
+    else:
+        # New format: ## Title — prepend current time
+        header_match = re.search(r"^## (.+)$", entry, re.MULTILINE)
+        if not header_match:
+            print("Error: Entry must start with '## Title'", file=sys.stderr)
+            sys.exit(1)
+
+        title = header_match.group(1)
+        # Replace the header with time-prefixed version
+        entry = re.sub(r"^## .+$", f"## {time_str} — {title}", entry, count=1, flags=re.MULTILINE)
     
     # Determine log file
     today = datetime.now().strftime("%Y-%m-%d")
@@ -171,10 +184,7 @@ def cmd_write(args):
 
 def cmd_new_id(args):
     """Generate a new entry ID for the current time (or specified time)."""
-    scribe_dir = find_scribe_dir()
-    if not scribe_dir:
-        print("Error: .scribe directory not found", file=sys.stderr)
-        sys.exit(1)
+    scribe_dir = require_scribe_dir()
     
     time_str = args.time or datetime.now().strftime("%H:%M")
     
@@ -192,10 +202,7 @@ def cmd_new_id(args):
 
 def cmd_last(args):
     """Show the last entry ID from today's log."""
-    scribe_dir = find_scribe_dir()
-    if not scribe_dir:
-        print("Error: .scribe directory not found", file=sys.stderr)
-        sys.exit(1)
+    scribe_dir = require_scribe_dir()
     
     today = datetime.now().strftime("%Y-%m-%d")
     log_file = scribe_dir / f"{today}.md"
@@ -225,10 +232,7 @@ def cmd_last(args):
 
 def cmd_edit_latest_show(args):
     """Display the latest entry."""
-    scribe_dir = find_scribe_dir()
-    if not scribe_dir:
-        print("Error: .scribe directory not found", file=sys.stderr)
-        sys.exit(1)
+    scribe_dir = require_scribe_dir()
     
     result = find_latest_entry(scribe_dir)
     if not result:
@@ -242,10 +246,7 @@ def cmd_edit_latest_show(args):
 
 def cmd_edit_latest_delete(args):
     """Delete the latest entry and its associated assets."""
-    scribe_dir = find_scribe_dir()
-    if not scribe_dir:
-        print("Error: .scribe directory not found", file=sys.stderr)
-        sys.exit(1)
+    scribe_dir = require_scribe_dir()
     
     result = find_latest_entry(scribe_dir)
     if not result:
@@ -274,30 +275,52 @@ def cmd_edit_latest_delete(args):
 
 
 def cmd_edit_latest_replace(args):
-    """Replace the latest entry with new content from stdin."""
-    scribe_dir = find_scribe_dir()
-    if not scribe_dir:
-        print("Error: .scribe directory not found", file=sys.stderr)
-        sys.exit(1)
-    
+    """Replace the latest entry with new content from file or stdin."""
+    scribe_dir = require_scribe_dir()
+
     result = find_latest_entry(scribe_dir)
     if not result:
         print("No entries found")
         return
-    
-    log_file, old_entry_id, _, start_pos, end_pos = result
-    
-    # Read new entry from stdin
-    new_entry = sys.stdin.read().strip()
+
+    log_file, old_entry_id, _, start_pos, _ = result
+
+    if not old_entry_id:
+        print("Error: Latest entry has no ID, cannot replace", file=sys.stderr)
+        sys.exit(1)
+
+    # Read new entry from file or stdin
+    if args.file:
+        file_path = Path(args.file)
+        if not file_path.exists():
+            print(f"Error: File not found: {args.file}", file=sys.stderr)
+            sys.exit(1)
+        new_entry = file_path.read_text().strip()
+    else:
+        new_entry = sys.stdin.read().strip()
+
     if not new_entry:
-        print("Error: No entry provided (pipe entry via stdin)", file=sys.stderr)
+        print("Error: No entry provided (use --file or pipe via stdin)", file=sys.stderr)
         sys.exit(1)
-    
-    # Validate new entry format
-    header_match = re.search(r"^## (\d{2}:\d{2}) — .+$", new_entry, re.MULTILINE)
-    if not header_match:
-        print("Error: Entry must start with '## HH:MM — Title'", file=sys.stderr)
-        sys.exit(1)
+
+    # Get current time
+    time_str = datetime.now().strftime("%H:%M")
+
+    # Check if entry already has time in header (legacy format: ## HH:MM — Title)
+    legacy_match = re.search(r"^## (\d{2}:\d{2}) — .+$", new_entry, re.MULTILINE)
+    if legacy_match:
+        # Use provided time (legacy support)
+        time_str = legacy_match.group(1)
+    else:
+        # New format: ## Title — prepend current time
+        header_match = re.search(r"^## (.+)$", new_entry, re.MULTILINE)
+        if not header_match:
+            print("Error: Entry must start with '## Title'", file=sys.stderr)
+            sys.exit(1)
+
+        title = header_match.group(1)
+        # Replace the header with time-prefixed version
+        new_entry = re.sub(r"^## .+$", f"## {time_str} — {title}", new_entry, count=1, flags=re.MULTILINE)
     
     # Reuse the old entry ID to preserve asset links
     new_entry_with_id = inject_entry_id(new_entry, old_entry_id)
@@ -315,10 +338,7 @@ def cmd_edit_latest_replace(args):
 
 def cmd_edit_latest_rearchive(args):
     """Re-archive a file using the latest entry's ID."""
-    scribe_dir = find_scribe_dir()
-    if not scribe_dir:
-        print("Error: .scribe directory not found", file=sys.stderr)
-        sys.exit(1)
+    scribe_dir = require_scribe_dir()
     
     result = find_latest_entry(scribe_dir)
     if not result:
@@ -353,10 +373,7 @@ def cmd_edit_latest_rearchive(args):
 
 def cmd_edit_latest_unarchive(args):
     """Delete all assets associated with the latest entry (but keep the entry)."""
-    scribe_dir = find_scribe_dir()
-    if not scribe_dir:
-        print("Error: .scribe directory not found", file=sys.stderr)
-        sys.exit(1)
+    scribe_dir = require_scribe_dir()
     
     result = find_latest_entry(scribe_dir)
     if not result:
@@ -382,7 +399,8 @@ def main():
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     # write command
-    write_parser = subparsers.add_parser("write", help="Write an entry (reads from stdin)")
+    write_parser = subparsers.add_parser("write", help="Write an entry (from file or stdin)")
+    write_parser.add_argument("--file", help="Read entry from file instead of stdin")
     write_parser.set_defaults(func=cmd_write)
 
     # new-id command
@@ -408,7 +426,8 @@ def main():
     edit_delete.set_defaults(func=cmd_edit_latest_delete)
     
     # edit-latest replace
-    edit_replace = edit_subparsers.add_parser("replace", help="Replace the latest entry (reads from stdin)")
+    edit_replace = edit_subparsers.add_parser("replace", help="Replace the latest entry (from file or stdin)")
+    edit_replace.add_argument("--file", help="Read entry from file instead of stdin")
     edit_replace.set_defaults(func=cmd_edit_latest_replace)
     
     # edit-latest rearchive

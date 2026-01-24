@@ -1,8 +1,8 @@
 ---
 name: scribe
 description: Maintains a narrative log of exploratory work with file archives. Capabilities: (1) Log entries with propose-confirm flow, (2) Archive files linked to entries, (3) Restore archived files, (4) Query past work by time or topic, (5) Link related entries for thread tracking. Activates when user addresses "scribe" directly (e.g., "hey scribe, log this", "scribe, save this notebook", "scribe, what did we try yesterday?") or uses `/scribe` commands.
-allowed-tools: Read, Write, Bash(python:*), Bash(mkdir:*), Bash(cat:*), Bash(ls:*), Bash(tail:*), Glob, Grep
-argument-hint: [log | save <file> | ask <question>]
+allowed-tools: Read, Write, Bash(python:*), Bash(mkdir:*), Glob, Grep
+argument-hint: [log | save <file> | restore <asset> | ask <question>]
 ---
 
 # Scribe
@@ -37,7 +37,7 @@ Both work. Natural addressing or slash command — your choice.
 
 Scripts (`assets.py`, `entry.py`, `validate.py`) live in the skill's `scripts/` subdirectory and operate on `.scribe/` in the current working directory.
 
-**Python requirement:** Scripts require Python 3.9+ (they use built-in generic types like `list[str]}`.
+**Python requirement:** Scripts require Python 3.9+ (they use built-in generic types like `list[str]`).
 
 **Script paths:** In the examples below, `{SKILL_DIR}` is a placeholder for this skill's installation directory. When you (Claude) load this SKILL.md, note its file path and use the containing directory as the base. For example, if you read this file from `/home/user/.claude/skills/scribe/SKILL.md`, then `{SKILL_DIR}` is `/home/user/.claude/skills/scribe`, and `{SKILL_DIR}/scripts/entry.py` becomes `/home/user/.claude/skills/scribe/scripts/entry.py`.
 
@@ -119,7 +119,7 @@ When the user asks to log, Claude proposes an entry for confirmation before writ
 >
 > ---
 >
-> **Snapshot these files?** (optional)
+> **Archive these files?** (optional)
 > - [ ] `etl.py`
 > - [ ] `exploration.ipynb`
 >
@@ -398,17 +398,18 @@ When the user asks questions about past work:
 - "scribe, show me yesterday's work" → read yesterday's file
 - "scribe, summarize last week" → read the last 7 day files
 
-For multi-day queries, read efficiently in one command:
+For multi-day queries, use Read tool on each file, or read efficiently with Glob + Read:
+
+1. `Glob(".scribe/*.md")` to list log files
+2. Read the most recent files (sorted by name = sorted by date)
+
+For shell-based queries (if needed):
 ```bash
-# Last 7 days (adjust dates as needed)
-cat .scribe/2026-01-{18..24}.md
-
-# Or dynamically
-ls .scribe/*.md | tail -7 | xargs cat
-
-# Just recent entries from each file
-tail -50 .scribe/2026-01-{18..24}.md
+# List recent log files
+ls -1 .scribe/*.md | sort | tail -7
 ```
+
+Then use the Read tool on each file. Prefer Read over cat/tail for better integration.
 
 **Topic-based queries** — grep first, then read matching files:
 

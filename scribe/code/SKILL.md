@@ -412,7 +412,7 @@ For multi-day queries, use Glob + Read:
 
 - "scribe, what entries build on the feature engineering work?" → find the entry's ID, then `Grep` for that ID in `.scribe/` to find entries that reference it in their **Related** section
 
-**Asset queries** — use the list command, then search logs if needed:
+**Asset queries** — use the list command, then Grep logs if needed:
 
 - "scribe, show me archives of the notebook" → `python {SKILL_DIR}/scripts/assets.py list notebook`
 - "scribe, what version of clustering.ipynb worked?" → `Grep` for "clustering" and "worked" in `.scribe/`, then Read matches

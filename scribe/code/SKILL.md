@@ -1,7 +1,7 @@
 ---
 name: scribe
 description: Maintains a narrative log of exploratory work with file archives. Capabilities: (1) Log entries with propose-confirm flow, (2) Archive files linked to entries, (3) Restore archived files, (4) Query past work by time or topic, (5) Link related entries for thread tracking. Activates when user addresses "scribe" directly (e.g., "hey scribe, log this", "scribe, save this notebook", "scribe, what did we try yesterday?") or uses `/scribe` commands.
-allowed-tools: Read, Write, Bash(python:*), Bash(mkdir:*), Glob, Grep
+allowed-tools: Read, Write, Bash(python:*), Bash(mkdir:*), Bash(git:*), Glob, Grep
 argument-hint: [log | save <file> | restore <asset> | ask <question>]
 ---
 
@@ -380,7 +380,7 @@ python {SKILL_DIR}/scripts/assets.py list transform     # filter by name
 - If restore fails because the destination exists, tell the user and offer to delete the existing file or suggest they rename/remove it first
 - Underscore prefix makes restored files obvious
 - User controls cleanup — the scribe never deletes restored files
-- Restored files are easy to gitignore with `_2026-*`
+- Restored files are easy to gitignore with `_20*-*`
 
 **Example invocations:**
 
@@ -421,7 +421,7 @@ For multi-day queries, use Glob + Read:
 
 1. Determine if time-based or topic-based
 2. For time-based: read the relevant day files directly
-3. For topic-based: grep for keywords, then read only matching files
+3. For topic-based: use Grep tool for keywords, then read matching files
 4. Synthesize an answer from the entries
 
 **Example questions:**

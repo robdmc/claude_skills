@@ -136,7 +136,7 @@ If Claude has no conversation context (new session), it should:
 
 1. Read today's log file (if exists) to see the last entry
 2. Check recent log files for context on what was in progress
-3. Check git status or file mod-times for what's changed
+3. Run `git status` to see what's changed since the last commit
 4. Ask the user: "I see these files changed since the last entry — what should I capture?"
 
 **What to capture:**
@@ -415,7 +415,7 @@ For multi-day queries, use Glob + Read:
 **Asset queries** — use the list command, then search logs if needed:
 
 - "scribe, show me archives of the notebook" → `python {SKILL_DIR}/scripts/assets.py list notebook`
-- "scribe, what version of clustering.ipynb worked?" → search logs for "clustering" + "worked"
+- "scribe, what version of clustering.ipynb worked?" → `Grep` for "clustering" and "worked" in `.scribe/`, then Read matches
 
 **Process:**
 

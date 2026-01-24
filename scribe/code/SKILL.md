@@ -398,27 +398,19 @@ When the user asks questions about past work:
 - "scribe, show me yesterday's work" → read yesterday's file
 - "scribe, summarize last week" → read the last 7 day files
 
-For multi-day queries, use Read tool on each file, or read efficiently with Glob + Read:
+For multi-day queries, use Glob + Read:
 
-1. `Glob(".scribe/*.md")` to list log files
-2. Read the most recent files (sorted by name = sorted by date)
+1. Use `Glob` with pattern `.scribe/*.md` to list log files (sorted by name = sorted by date)
+2. Use `Read` on the most recent files
 
-For shell-based queries (if needed):
-```bash
-# List recent log files
-ls -1 .scribe/*.md | sort | tail -7
-```
+**Topic-based queries** — use Grep tool first, then read matching files:
 
-Then use the Read tool on each file. Prefer Read over cat/tail for better integration.
-
-**Topic-based queries** — grep first, then read matching files:
-
-- "scribe, what did we try for the null problem?" → `grep -l "null" .scribe/*.md`, then read matches
-- "scribe, when did we last touch the ETL?" → `grep -l "ETL" .scribe/*.md`, then read matches
+- "scribe, what did we try for the null problem?" → `Grep` with pattern `null` in path `.scribe/`, then Read matches
+- "scribe, when did we last touch the ETL?" → `Grep` with pattern `ETL` in path `.scribe/`, then Read matches
 
 **Thread queries** — find entries that reference a given entry:
 
-- "scribe, what entries build on the feature engineering work?" → find the entry's ID, then `grep -l "{entry-id}" .scribe/*.md` to find entries that reference it in their **Related** section
+- "scribe, what entries build on the feature engineering work?" → find the entry's ID, then `Grep` for that ID in `.scribe/` to find entries that reference it in their **Related** section
 
 **Asset queries** — use the list command, then search logs if needed:
 
@@ -466,7 +458,14 @@ On first invocation, if `.scribe/` doesn't exist, create it automatically:
 mkdir -p .scribe/assets
 ```
 
-Add `.scribe/` to the parent repo's `.gitignore`.
+Add to the parent repo's `.gitignore`:
+
+```
+.scribe/
+_20*-*
+```
+
+The second pattern ignores restored asset files (which have an underscore prefix).
 
 This happens automatically when the user first addresses the scribe — no manual setup required.
 
@@ -485,4 +484,4 @@ This happens automatically when the user first addresses the scribe — no manua
 - **Stay concise.** Each entry should be scannable. Details belong in the code.
 - **Preserve dead ends.** Failed approaches prevent repeating mistakes.
 - **Track open threads.** Note unresolved questions for later.
-- **Archive at meaningful moments.** Snapshot when something works, before a risky change, or when the user says to.
+- **Archive at meaningful moments.** Save a copy when something works, before a risky change, or when the user says to.

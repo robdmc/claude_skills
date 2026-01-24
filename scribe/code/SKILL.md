@@ -1,7 +1,8 @@
 ---
 name: scribe
 description: Maintains a narrative log of exploratory work with file archives. Capabilities: (1) Log entries with propose-confirm flow, (2) Archive files linked to entries, (3) Restore archived files, (4) Query past work by time or topic, (5) Link related entries for thread tracking. Activates when user addresses "scribe" directly (e.g., "hey scribe, log this", "scribe, save this notebook", "scribe, what did we try yesterday?") or uses `/scribe` commands.
-allowed-tools: Read, Write, Bash(python:*), Bash(mkdir:*), Bash(git:*), Glob, Grep
+disable-model-invocation: true
+allowed-tools: Read, Write, Bash(python:*), Bash(mkdir:*), Bash(git status*), Glob, Grep
 argument-hint: [log | save <file> | restore <asset> | ask <question>]
 ---
 
@@ -34,31 +35,34 @@ The scribe maintains a narrative log of your exploratory work and can archive im
 
 ## Scripts
 
-Scripts in `{SKILL_DIR}/scripts/` (substitute actual path when invoking):
+Scripts in `{SKILL_DIR}/scripts/`. Resolve `{SKILL_DIR}` to the directory containing this SKILL.md file.
 
 | Script | Purpose |
 |--------|---------|
-| `entry.py write --file /tmp/entry.md` | Write entry from temp file |
+| `entry.py write --file /tmp/scribe_entry_${CLAUDE_SESSION_ID}.md` | Write entry from temp file |
+| `entry.py new-id` | Generate entry ID for current time (handles collisions) |
 | `entry.py last` | Get last entry ID from today |
 | `assets.py save <id> <file>` | Archive a file |
 | `assets.py list [filter]` | List archived files |
 | `assets.py get <asset> --dest <dir>` | Restore a file |
 | `validate.py` | Check for errors |
 
-**Python 3.9+ required.**
+**Python 3.9+ required.** Use `python3` if `python` doesn't point to Python 3 on your system.
 
-## Logging Flow
+## Logging Flow (Task Instructions)
+
+Follow these steps when logging:
 
 1. **Assess** — Check conversation context, recent logs, `git status`
 2. **Propose** — Draft entry, offer optional file archives
 3. **Confirm** — Wait for user approval
-4. **Write** — `python {SKILL_DIR}/scripts/entry.py write --file /tmp/scribe_entry.md`
+4. **Write** — `python {SKILL_DIR}/scripts/entry.py write --file /tmp/scribe_entry_${CLAUDE_SESSION_ID}.md`
 
 **Shortcut:** For "quick log", write directly without proposing.
 
 ### Entry Format
 
-Write to `/tmp/scribe_entry.md`:
+Write to `/tmp/scribe_entry_${CLAUDE_SESSION_ID}.md`:
 ```markdown
 ## Brief title here
 
@@ -85,12 +89,14 @@ IDs link entries to assets and enable **Related** cross-references:
 
 ## Archiving
 
-After writing entry, archive files:
-```bash
-python {SKILL_DIR}/scripts/assets.py save 2026-01-23-14-35 notebook.ipynb
-```
+When archiving files, include the **Archived** section in your draft before writing. The asset filename is predictable: `{entry-id}-{filename}`.
 
-Add to entry:
+1. Get entry ID — `python {SKILL_DIR}/scripts/entry.py new-id` (handles collisions)
+2. Draft entry with **Archived** section using that ID
+3. Write entry — `python {SKILL_DIR}/scripts/entry.py write --file /tmp/scribe_entry_${CLAUDE_SESSION_ID}.md`
+4. Archive files — `python {SKILL_DIR}/scripts/assets.py save <id> <file>`
+
+Example **Archived** section:
 ```markdown
 **Archived:**
 - `src/notebook.ipynb` → [`2026-01-23-14-35-notebook.ipynb`](assets/2026-01-23-14-35-notebook.ipynb)
@@ -110,16 +116,22 @@ Add to entry:
 
 ## Initialization
 
-On first use:
+On first use, check if `.scribe/` exists. If not:
 ```bash
 mkdir -p .scribe/assets
 ```
 
-Add to `.gitignore`:
+Then ensure `.gitignore` contains these entries (add if missing):
 ```
 .scribe/
 _20*-*
 ```
+
+## Error Handling
+
+- **No `.scribe/` directory**: Run initialization first
+- **Script fails**: Show error output to user, don't retry automatically
+- **Asset not found**: List available assets with `assets.py list`
 
 ## Reference Files
 

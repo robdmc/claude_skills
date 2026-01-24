@@ -65,7 +65,7 @@ The script prepends the timestamp, so the written entry looks like:
 
 Use Claude's Write tool to create a temp file, then pass it to `entry.py`:
 
-**Step 1:** Use the Write tool to create `/tmp/scribe_entry.md`:
+**Step 1:** Use the Write tool to create `/tmp/scribe_entry_${CLAUDE_SESSION_ID}.md`:
 
 ```markdown
 ## Fixed null handling in ETL pipeline
@@ -83,7 +83,7 @@ Found that nulls originated from the 2019 migration.
 **Step 2:** Run the script with `--file`:
 
 ```bash
-python {SKILL_DIR}/scripts/entry.py write --file /tmp/scribe_entry.md
+python {SKILL_DIR}/scripts/entry.py write --file /tmp/scribe_entry_${CLAUDE_SESSION_ID}.md
 ```
 
 Output: `Entry written: 2026-01-23-14-35`

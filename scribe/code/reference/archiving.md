@@ -14,9 +14,12 @@ When the user wants to archive a file, they might say:
 
 ### Archive Flow
 
-1. Write the narrative entry as usual
-2. Call the archive script to copy the file to `.scribe/assets/`
-3. Add an **Archived** section to the entry linking to the archived file
+1. Get entry ID with `entry.py new-id` (handles minute collisions)
+2. Draft entry including **Archived** section using that ID
+3. Write entry with `entry.py write`
+4. Archive files with `assets.py save <id> <file>`
+
+The asset filename is predictable: `{entry-id}-{filename}`. Include it in your draft before writing.
 
 ### Assets Script Usage
 
